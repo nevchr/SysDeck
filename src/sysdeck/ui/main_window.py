@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from .performance_page import PerformancePage
 
 from .theme import APP_STYLE
 
@@ -130,41 +131,50 @@ class MainWindow(QMainWindow):
         return button
 
     def create_pages(self):
-        pages = [
-            (
+        self.pages.addWidget(
+            PlaceholderPage(
                 "Dashboard",
                 "A quick overview of your system.",
-            ),
-            (
-                "Performance",
-                "Monitor CPU, memory, disks, network activity, and processes.",
-            ),
-            (
+            )
+        )
+
+        self.pages.addWidget(
+            PerformancePage()
+        )
+
+        self.pages.addWidget(
+            PlaceholderPage(
                 "Storage",
                 "Analyze how space is being used across your drives.",
-            ),
-            (
+            )
+        )
+
+        self.pages.addWidget(
+            PlaceholderPage(
                 "Search",
                 "Find indexed files quickly across your computer.",
-            ),
-            (
+            )
+        )
+
+        self.pages.addWidget(
+            PlaceholderPage(
                 "Files",
                 "Find duplicates and organize files.",
-            ),
-            (
+            )
+        )
+
+        self.pages.addWidget(
+            PlaceholderPage(
                 "Vault",
                 "Securely store local credentials and private information.",
-            ),
-            (
+            )
+        )
+
+        self.pages.addWidget(
+            PlaceholderPage(
                 "Settings",
                 "Configure SysDeck preferences and behavior.",
-            ),
-        ]
-
-        for title, description in pages:
-            self.pages.addWidget(
-                PlaceholderPage(title, description)
             )
-
+        )
     def switch_page(self, index):
         self.pages.setCurrentIndex(index)

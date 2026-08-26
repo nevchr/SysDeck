@@ -52,4 +52,29 @@ QPushButton#navButton:checked {
     color: #929292;
     font-size: 14px;
 }
+#metricCard {
+    background-color: #1e1e1e;
+    border: 1px solid #292929;
+    border-radius: 12px;
+}
+
+#metricTitle {
+    color: #929292;
+    font-size: 13px;
+}
+
+#metricValue {
+    color: #f5f5f5;
+    font-size: 30px;
+    font-weight: 600;
+}
+#metricDetail {
+    color: #777777;
+    font-size: 12px;
+}
+#performanceChart {
+    background-color: #1e1e1e;
+    border: 1px solid #292929;
+    border-radius: 12px;
+}
 """
