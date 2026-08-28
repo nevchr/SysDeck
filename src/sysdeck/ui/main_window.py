@@ -1,4 +1,7 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import (
+    QSettings,
+    Qt,
+)
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -17,6 +20,7 @@ from .files_page import FilesPage
 from .performance_page import PerformancePage
 from .processes_page import ProcessesPage
 from .search_page import SearchPage
+from .settings_page import SettingsPage
 from .storage_page import StoragePage
 from .theme import APP_STYLE
 
@@ -76,6 +80,11 @@ class PlaceholderPage(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+
+        self.settings = QSettings(
+            "SysDeck",
+            "SysDeck",
+        )
 
         self.setWindowTitle(
             "SysDeck"
@@ -148,13 +157,11 @@ class MainWindow(QMainWindow):
             root
         )
 
-        self.nav_buttons[0].setChecked(
-            True
-        )
+        self.restore_start_page()
 
-        self.pages.setCurrentIndex(
-            0
-        )
+    # ========================================================
+    # Sidebar
+    # ========================================================
 
     def create_sidebar(self):
         sidebar = QFrame()
@@ -274,13 +281,54 @@ class MainWindow(QMainWindow):
 
         return button
 
+    # ========================================================
+    # Pages
+    # ========================================================
+
     def create_pages(self):
         self.dashboard_page = (
             DashboardPage()
         )
 
+        self.performance_page = (
+            PerformancePage()
+        )
+
+        self.processes_page = (
+            ProcessesPage()
+        )
+
+        self.storage_page = (
+            StoragePage()
+        )
+
+        self.search_page = (
+            SearchPage()
+        )
+
+        self.files_page = (
+            FilesPage()
+        )
+
+        self.vault_page = PlaceholderPage(
+            "Vault",
+            "Securely store local credentials and private information.",
+        )
+
+        self.settings_page = (
+            SettingsPage()
+        )
+
         self.dashboard_page.navigate_requested.connect(
             self.switch_page
+        )
+
+        self.settings_page.reindex_requested.connect(
+            self.handle_reindex_requested
+        )
+
+        self.settings_page.index_changed.connect(
+            self.handle_index_changed
         )
 
         self.pages.addWidget(
@@ -288,43 +336,83 @@ class MainWindow(QMainWindow):
         )
 
         self.pages.addWidget(
-            PerformancePage()
+            self.performance_page
         )
 
         self.pages.addWidget(
-            ProcessesPage()
+            self.processes_page
         )
 
         self.pages.addWidget(
-            StoragePage()
+            self.storage_page
         )
 
         self.pages.addWidget(
-            SearchPage()
+            self.search_page
         )
 
         self.pages.addWidget(
-            FilesPage()
+            self.files_page
         )
 
         self.pages.addWidget(
-            PlaceholderPage(
-                "Vault",
-                "Securely store local credentials and private information.",
-            )
+            self.vault_page
         )
 
         self.pages.addWidget(
-            PlaceholderPage(
-                "Settings",
-                "Configure SysDeck preferences and behavior.",
-            )
+            self.settings_page
+        )
+
+    # ========================================================
+    # Navigation
+    # ========================================================
+
+    def restore_start_page(self):
+        remember = self.settings.value(
+            "navigation/remember_last_page",
+            False,
+            type=bool,
+        )
+
+        page_index = 0
+
+        if remember:
+            try:
+                page_index = int(
+                    self.settings.value(
+                        "navigation/last_page",
+                        0,
+                    )
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+                page_index = 0
+
+        if not (
+            0
+            <= page_index
+            < self.pages.count()
+        ):
+            page_index = 0
+
+        self.switch_page(
+            page_index
         )
 
     def switch_page(
         self,
         index,
     ):
+        if not (
+            0
+            <= index
+            < self.pages.count()
+        ):
+            return
+
         self.pages.setCurrentIndex(
             index
         )
@@ -339,3 +427,43 @@ class MainWindow(QMainWindow):
             ].setChecked(
                 True
             )
+
+        remember = self.settings.value(
+            "navigation/remember_last_page",
+            False,
+            type=bool,
+        )
+
+        if remember:
+            self.settings.setValue(
+                "navigation/last_page",
+                index,
+            )
+
+    # ========================================================
+    # Settings integration
+    # ========================================================
+
+    def handle_reindex_requested(
+        self,
+        root_path,
+    ):
+        self.search_page.start_index(
+            root_path
+        )
+
+        self.switch_page(
+            4
+        )
+
+    def handle_index_changed(self):
+        # Dashboard
+        self.dashboard_page.update_index_stats()
+
+        # Search
+        self.search_page.refresh_filter_options()
+        self.search_page.refresh_index_status()
+        self.search_page.perform_search()
+
+        # Files
+        self.files_page.refresh_index_info()

@@ -300,6 +300,8 @@ class StoragePage(QWidget):
             20
         )
 
+        
+
         scroll_area.setWidget(
             content
         )
