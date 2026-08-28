@@ -39,7 +39,8 @@ QPushButton#navButton:checked {
     color: #ffffff;
 }
 
-#contentArea {
+#contentArea,
+#storageContent {
     background-color: #171717;
 }
 
@@ -53,7 +54,11 @@ QPushButton#navButton:checked {
     font-size: 14px;
 }
 
-#metricCard {
+#metricCard,
+#driveCard,
+#summaryCard,
+#resultCard,
+#scanPanel {
     background-color: #1e1e1e;
     border: 1px solid #292929;
     border-radius: 12px;
@@ -73,6 +78,128 @@ QPushButton#navButton:checked {
 #metricDetail {
     color: #777777;
     font-size: 12px;
+}
+
+#driveTitle {
+    color: #f2f2f2;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+#drivePercent {
+    color: #bdbdbd;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+#driveUsageText {
+    color: #9a9a9a;
+    font-size: 13px;
+}
+
+#driveFreeText {
+    color: #777777;
+    font-size: 12px;
+}
+
+#selectedPath {
+    color: #777777;
+    font-size: 12px;
+}
+
+#scanStatus {
+    color: #a0a0a0;
+    font-size: 13px;
+}
+
+#summaryTitle {
+    color: #828282;
+    font-size: 12px;
+}
+
+#summaryValue {
+    color: #f2f2f2;
+    font-size: 22px;
+    font-weight: 600;
+}
+
+#resultTitle {
+    color: #f0f0f0;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+QProgressBar#storageProgress {
+    background-color: #292929;
+    border: none;
+    border-radius: 4px;
+    min-height: 8px;
+    max-height: 8px;
+}
+
+QProgressBar#storageProgress::chunk {
+    background-color: #b5b5b5;
+    border-radius: 4px;
+}
+
+QProgressBar#scanProgress {
+    background-color: #292929;
+
+    border: none;
+    border-radius: 3px;
+
+    min-height: 5px;
+    max-height: 5px;
+}
+
+QProgressBar#scanProgress::chunk {
+    background-color: #a8a8a8;
+    border-radius: 3px;
+}
+
+QPushButton#primaryButton {
+    background-color: #eeeeee;
+    color: #181818;
+
+    border: none;
+    border-radius: 8px;
+
+    padding: 9px 14px;
+
+    font-weight: 600;
+}
+
+QPushButton#primaryButton:hover {
+    background-color: #ffffff;
+}
+
+QPushButton#primaryButton:pressed {
+    background-color: #d8d8d8;
+}
+
+QPushButton#primaryButton:disabled {
+    background-color: #555555;
+    color: #999999;
+}
+
+QPushButton#secondaryButton {
+    background-color: #232323;
+    color: #d0d0d0;
+
+    border: 1px solid #303030;
+    border-radius: 8px;
+
+    padding: 9px 14px;
+}
+
+QPushButton#secondaryButton:hover {
+    background-color: #292929;
+    color: #ffffff;
+}
+
+QPushButton#secondaryButton:disabled {
+    background-color: #1f1f1f;
+    color: #555555;
 }
 
 QLineEdit#processSearch {
@@ -100,14 +227,15 @@ QLineEdit#processSearch:focus {
     font-size: 12px;
 }
 
-QTableView#processTable {
+QTableView#processTable,
+QTableWidget#storageResultTable {
     background-color: #1b1b1b;
     alternate-background-color: #1e1e1e;
 
     color: #dedede;
 
     border: 1px solid #292929;
-    border-radius: 10px;
+    border-radius: 9px;
 
     outline: none;
 
@@ -115,13 +243,15 @@ QTableView#processTable {
     selection-color: #ffffff;
 }
 
-QTableView#processTable::item {
+QTableView#processTable::item,
+QTableWidget#storageResultTable::item {
     padding-left: 8px;
     padding-right: 8px;
     border: none;
 }
 
-QTableView#processTable::item:selected {
+QTableView#processTable::item:selected,
+QTableWidget#storageResultTable::item:selected {
     background-color: #303030;
     color: #ffffff;
 }
@@ -137,6 +267,11 @@ QHeaderView::section {
 
     font-size: 12px;
     font-weight: 600;
+}
+
+QScrollArea {
+    background-color: transparent;
+    border: none;
 }
 
 QScrollBar:vertical {
