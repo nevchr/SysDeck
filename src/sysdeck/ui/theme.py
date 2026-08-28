@@ -102,7 +102,9 @@ QPushButton#navButton:checked {
     font-size: 12px;
 }
 
-#selectedPath {
+#selectedPath,
+#searchStatus,
+#processStatus {
     color: #777777;
     font-size: 12px;
 }
@@ -133,6 +135,7 @@ QProgressBar#storageProgress {
     background-color: #292929;
     border: none;
     border-radius: 4px;
+
     min-height: 8px;
     max-height: 8px;
 }
@@ -197,38 +200,83 @@ QPushButton#secondaryButton:hover {
     color: #ffffff;
 }
 
+QPushButton#secondaryButton:pressed {
+    background-color: #333333;
+}
+
 QPushButton#secondaryButton:disabled {
     background-color: #1f1f1f;
     color: #555555;
 }
 
-QLineEdit#processSearch {
+QLineEdit#processSearch,
+QLineEdit#searchInput {
     background-color: #1e1e1e;
     color: #f2f2f2;
 
     border: 1px solid #303030;
-    border-radius: 8px;
+    border-radius: 9px;
 
     padding: 9px 11px;
 
     selection-background-color: #444444;
 }
 
-QLineEdit#processSearch:hover {
+QLineEdit#searchInput {
+    padding: 12px 14px;
+    font-size: 15px;
+    border-radius: 10px;
+}
+
+QLineEdit#processSearch:hover,
+QLineEdit#searchInput:hover {
     border-color: #3a3a3a;
 }
 
-QLineEdit#processSearch:focus {
+QLineEdit#processSearch:focus,
+QLineEdit#searchInput:focus {
     border-color: #505050;
 }
 
-#processStatus {
-    color: #777777;
-    font-size: 12px;
+QComboBox#searchFilter {
+    background-color: #202020;
+    color: #d0d0d0;
+
+    border: 1px solid #303030;
+    border-radius: 8px;
+
+    padding: 8px 10px;
+}
+
+QComboBox#searchFilter:hover {
+    background-color: #252525;
+    border-color: #3a3a3a;
+}
+
+QComboBox#searchFilter:focus {
+    border-color: #505050;
+}
+
+QComboBox#searchFilter::drop-down {
+    border: none;
+    width: 24px;
+}
+
+QComboBox#searchFilter QAbstractItemView {
+    background-color: #202020;
+    color: #dedede;
+
+    border: 1px solid #343434;
+
+    selection-background-color: #303030;
+    selection-color: #ffffff;
+
+    outline: none;
 }
 
 QTableView#processTable,
-QTableWidget#storageResultTable {
+QTableWidget#storageResultTable,
+QTableWidget#searchResults {
     background-color: #1b1b1b;
     alternate-background-color: #1e1e1e;
 
@@ -244,14 +292,16 @@ QTableWidget#storageResultTable {
 }
 
 QTableView#processTable::item,
-QTableWidget#storageResultTable::item {
+QTableWidget#storageResultTable::item,
+QTableWidget#searchResults::item {
     padding-left: 8px;
     padding-right: 8px;
     border: none;
 }
 
 QTableView#processTable::item:selected,
-QTableWidget#storageResultTable::item:selected {
+QTableWidget#storageResultTable::item:selected,
+QTableWidget#searchResults::item:selected {
     background-color: #303030;
     color: #ffffff;
 }
@@ -306,60 +356,12 @@ QScrollBar::handle:horizontal {
     min-width: 30px;
 }
 
+QScrollBar::handle:horizontal:hover {
+    background-color: #464646;
+}
+
 QScrollBar::add-line:horizontal,
 QScrollBar::sub-line:horizontal {
     width: 0px;
-}
-#searchStatus {
-    color: #777777;
-    font-size: 12px;
-}
-
-QLineEdit#searchInput {
-    background-color: #1e1e1e;
-    color: #f2f2f2;
-
-    border: 1px solid #303030;
-    border-radius: 10px;
-
-    padding: 12px 14px;
-
-    font-size: 15px;
-
-    selection-background-color: #444444;
-}
-
-QLineEdit#searchInput:hover {
-    border-color: #3a3a3a;
-}
-
-QLineEdit#searchInput:focus {
-    border-color: #505050;
-}
-
-QTableWidget#searchResults {
-    background-color: #1b1b1b;
-    alternate-background-color: #1e1e1e;
-
-    color: #dedede;
-
-    border: 1px solid #292929;
-    border-radius: 10px;
-
-    outline: none;
-
-    selection-background-color: #303030;
-    selection-color: #ffffff;
-}
-
-QTableWidget#searchResults::item {
-    padding-left: 8px;
-    padding-right: 8px;
-    border: none;
-}
-
-QTableWidget#searchResults::item:selected {
-    background-color: #303030;
-    color: #ffffff;
 }
 """

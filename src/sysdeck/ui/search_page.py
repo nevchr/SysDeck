@@ -14,8 +14,8 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
     QFileDialog,
-    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -27,8 +27,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.database import connect_database
+from ..core.database import (
+    connect_database,
+    get_database_path,
+)
 
+
+# ============================================================
+# Background file indexer
+# ============================================================
 
 class FileIndexWorker(QObject):
     progress = Signal(object)
@@ -49,7 +56,8 @@ class FileIndexWorker(QObject):
         try:
             connection = connect_database()
 
-            # Replace the previous index for this same root.
+            # Re-indexing the same location replaces
+            # its old records instead of duplicating them.
             connection.execute(
                 """
                 DELETE FROM files
@@ -104,7 +112,9 @@ class FileIndexWorker(QObject):
                     except OSError:
                         skipped_count += 1
 
-                directories[:] = safe_directories
+                directories[:] = (
+                    safe_directories
+                )
 
                 for filename in files:
                     if (
@@ -162,12 +172,16 @@ class FileIndexWorker(QObject):
 
                     if (
                         indexed_count % 500 == 0
-                        or now - last_progress_time >= 0.4
+                        or now - last_progress_time
+                        >= 0.4
                     ):
                         self.progress.emit(
                             {
-                                "indexed": indexed_count,
-                                "skipped": skipped_count,
+                                "indexed":
+                                    indexed_count,
+
+                                "skipped":
+                                    skipped_count,
                             }
                         )
 
@@ -183,9 +197,14 @@ class FileIndexWorker(QObject):
 
             self.finished.emit(
                 {
-                    "root": self.root_folder,
-                    "indexed": indexed_count,
-                    "skipped": skipped_count,
+                    "root":
+                        self.root_folder,
+
+                    "indexed":
+                        indexed_count,
+
+                    "skipped":
+                        skipped_count,
                 }
             )
 
@@ -230,6 +249,10 @@ class FileIndexWorker(QObject):
         connection.commit()
 
 
+# ============================================================
+# Search page
+# ============================================================
+
 class SearchPage(QWidget):
     def __init__(self):
         super().__init__()
@@ -240,6 +263,7 @@ class SearchPage(QWidget):
         self.setup_ui()
         self.setup_search_timer()
 
+        self.refresh_filter_options()
         self.refresh_index_status()
         self.perform_search()
 
@@ -249,6 +273,10 @@ class SearchPage(QWidget):
             app.aboutToQuit.connect(
                 self.shutdown_indexer
             )
+
+    # ========================================================
+    # UI
+    # ========================================================
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -260,11 +288,11 @@ class SearchPage(QWidget):
             40,
         )
 
-        layout.setSpacing(18)
+        layout.setSpacing(16)
 
-        # -----------------------------------------------------
+        # ----------------------------------------------------
         # Header
-        # -----------------------------------------------------
+        # ----------------------------------------------------
 
         header = QHBoxLayout()
 
@@ -321,9 +349,9 @@ class SearchPage(QWidget):
             header
         )
 
-        # -----------------------------------------------------
+        # ----------------------------------------------------
         # Index information
-        # -----------------------------------------------------
+        # ----------------------------------------------------
 
         self.index_status = QLabel(
             "Checking index..."
@@ -337,9 +365,9 @@ class SearchPage(QWidget):
             self.index_status
         )
 
-        # -----------------------------------------------------
-        # Search box
-        # -----------------------------------------------------
+        # ----------------------------------------------------
+        # Main search box
+        # ----------------------------------------------------
 
         self.search_input = QLineEdit()
 
@@ -348,7 +376,7 @@ class SearchPage(QWidget):
         )
 
         self.search_input.setPlaceholderText(
-            "Search files and folders..."
+            "Search by filename or path..."
         )
 
         self.search_input.setClearButtonEnabled(
@@ -363,9 +391,186 @@ class SearchPage(QWidget):
             self.search_input
         )
 
-        # -----------------------------------------------------
-        # Results toolbar
-        # -----------------------------------------------------
+        # ----------------------------------------------------
+        # Filters
+        # ----------------------------------------------------
+
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(10)
+
+        self.root_filter = QComboBox()
+
+        self.root_filter.setObjectName(
+            "searchFilter"
+        )
+
+        self.root_filter.setMinimumWidth(
+            190
+        )
+
+        self.root_filter.currentIndexChanged.connect(
+            self.queue_search
+        )
+
+        self.extension_filter = QComboBox()
+
+        self.extension_filter.setObjectName(
+            "searchFilter"
+        )
+
+        self.extension_filter.setMinimumWidth(
+            115
+        )
+
+        self.extension_filter.currentIndexChanged.connect(
+            self.queue_search
+        )
+
+        self.size_filter = QComboBox()
+
+        self.size_filter.setObjectName(
+            "searchFilter"
+        )
+
+        self.size_filter.addItem(
+            "Any size",
+            0,
+        )
+
+        self.size_filter.addItem(
+            "≥ 1 MB",
+            1024 ** 2,
+        )
+
+        self.size_filter.addItem(
+            "≥ 10 MB",
+            10 * 1024 ** 2,
+        )
+
+        self.size_filter.addItem(
+            "≥ 100 MB",
+            100 * 1024 ** 2,
+        )
+
+        self.size_filter.addItem(
+            "≥ 1 GB",
+            1024 ** 3,
+        )
+
+        self.size_filter.currentIndexChanged.connect(
+            self.queue_search
+        )
+
+        self.modified_filter = QComboBox()
+
+        self.modified_filter.setObjectName(
+            "searchFilter"
+        )
+
+        self.modified_filter.addItem(
+            "Any date",
+            None,
+        )
+
+        self.modified_filter.addItem(
+            "Today",
+            86400,
+        )
+
+        self.modified_filter.addItem(
+            "Last 7 days",
+            7 * 86400,
+        )
+
+        self.modified_filter.addItem(
+            "Last 30 days",
+            30 * 86400,
+        )
+
+        self.modified_filter.addItem(
+            "Last year",
+            365 * 86400,
+        )
+
+        self.modified_filter.currentIndexChanged.connect(
+            self.queue_search
+        )
+
+        self.sort_filter = QComboBox()
+
+        self.sort_filter.setObjectName(
+            "searchFilter"
+        )
+
+        self.sort_filter.addItem(
+            "Relevance",
+            "relevance",
+        )
+
+        self.sort_filter.addItem(
+            "Name A–Z",
+            "name",
+        )
+
+        self.sort_filter.addItem(
+            "Largest first",
+            "size",
+        )
+
+        self.sort_filter.addItem(
+            "Newest first",
+            "modified",
+        )
+
+        self.sort_filter.currentIndexChanged.connect(
+            self.queue_search
+        )
+
+        self.clear_filters_button = QPushButton(
+            "Clear Filters"
+        )
+
+        self.clear_filters_button.setObjectName(
+            "secondaryButton"
+        )
+
+        self.clear_filters_button.clicked.connect(
+            self.clear_filters
+        )
+
+        filter_row.addWidget(
+            self.root_filter
+        )
+
+        filter_row.addWidget(
+            self.extension_filter
+        )
+
+        filter_row.addWidget(
+            self.size_filter
+        )
+
+        filter_row.addWidget(
+            self.modified_filter
+        )
+
+        filter_row.addWidget(
+            self.sort_filter
+        )
+
+        filter_row.addStretch()
+
+        filter_row.addWidget(
+            self.clear_filters_button
+        )
+
+        layout.addLayout(
+            filter_row
+        )
+
+        # ----------------------------------------------------
+        # Result actions
+        # ----------------------------------------------------
 
         results_header = QHBoxLayout()
 
@@ -375,6 +580,22 @@ class SearchPage(QWidget):
 
         self.results_status.setObjectName(
             "searchStatus"
+        )
+
+        self.copy_path_button = QPushButton(
+            "Copy Path"
+        )
+
+        self.copy_path_button.setObjectName(
+            "secondaryButton"
+        )
+
+        self.copy_path_button.setEnabled(
+            False
+        )
+
+        self.copy_path_button.clicked.connect(
+            self.copy_selected_path
         )
 
         self.open_button = QPushButton(
@@ -416,6 +637,10 @@ class SearchPage(QWidget):
         results_header.addStretch()
 
         results_header.addWidget(
+            self.copy_path_button
+        )
+
+        results_header.addWidget(
             self.open_button
         )
 
@@ -427,9 +652,9 @@ class SearchPage(QWidget):
             results_header
         )
 
-        # -----------------------------------------------------
+        # ----------------------------------------------------
         # Results table
-        # -----------------------------------------------------
+        # ----------------------------------------------------
 
         self.results_table = QTableWidget(
             0,
@@ -477,11 +702,13 @@ class SearchPage(QWidget):
         )
 
         self.results_table.itemDoubleClicked.connect(
-            lambda _item: self.open_selected()
+            lambda _item:
+            self.open_selected()
         )
 
         header_view = (
-            self.results_table.horizontalHeader()
+            self.results_table
+            .horizontalHeader()
         )
 
         header_view.setSectionResizeMode(
@@ -524,7 +751,7 @@ class SearchPage(QWidget):
         )
 
         self.search_timer.setInterval(
-            200
+            180
         )
 
         self.search_timer.timeout.connect(
@@ -636,10 +863,8 @@ class SearchPage(QWidget):
             True
         )
 
-        self.index_status.setText(
-            f"Indexed {results['indexed']:,} files · "
-            f"{results['skipped']:,} skipped"
-        )
+        self.refresh_filter_options()
+        self.refresh_index_status()
 
         self.perform_search()
 
@@ -677,86 +902,384 @@ class SearchPage(QWidget):
             )
 
     # ========================================================
-    # Search
+    # Filter data
     # ========================================================
 
-    def queue_search(self):
-        self.search_timer.start()
+    def refresh_filter_options(self):
+        current_root = (
+            self.root_filter.currentData()
+            if self.root_filter.count()
+            else None
+        )
 
-    def perform_search(self):
-        query = (
-            self.search_input.text().strip()
-            if hasattr(
-                self,
-                "search_input",
-            )
-            else ""
+        current_extension = (
+            self.extension_filter.currentData()
+            if self.extension_filter.count()
+            else None
         )
 
         connection = connect_database()
 
         try:
-            if query:
-                wildcard = (
-                    f"%{query}%"
+            roots = connection.execute(
+                """
+                SELECT DISTINCT root_path
+                FROM files
+                ORDER BY root_path COLLATE NOCASE
+                """
+            ).fetchall()
+
+            extensions = connection.execute(
+                """
+                SELECT DISTINCT extension
+                FROM files
+                WHERE extension != ''
+                ORDER BY extension COLLATE NOCASE
+                """
+            ).fetchall()
+
+        finally:
+            connection.close()
+
+        self.root_filter.blockSignals(
+            True
+        )
+
+        self.extension_filter.blockSignals(
+            True
+        )
+
+        self.root_filter.clear()
+
+        self.root_filter.addItem(
+            "All locations",
+            None,
+        )
+
+        for root, in roots:
+            self.root_filter.addItem(
+                root,
+                root,
+            )
+
+        self.extension_filter.clear()
+
+        self.extension_filter.addItem(
+            "All types",
+            None,
+        )
+
+        for extension, in extensions:
+            self.extension_filter.addItem(
+                extension.upper(),
+                extension,
+            )
+
+        self.restore_combo_value(
+            self.root_filter,
+            current_root,
+        )
+
+        self.restore_combo_value(
+            self.extension_filter,
+            current_extension,
+        )
+
+        self.root_filter.blockSignals(
+            False
+        )
+
+        self.extension_filter.blockSignals(
+            False
+        )
+
+    @staticmethod
+    def restore_combo_value(
+        combo,
+        value,
+    ):
+        if value is None:
+            combo.setCurrentIndex(0)
+            return
+
+        index = combo.findData(
+            value
+        )
+
+        if index >= 0:
+            combo.setCurrentIndex(
+                index
+            )
+
+        else:
+            combo.setCurrentIndex(
+                0
+            )
+
+    def clear_filters(self):
+        self.root_filter.setCurrentIndex(
+            0
+        )
+
+        self.extension_filter.setCurrentIndex(
+            0
+        )
+
+        self.size_filter.setCurrentIndex(
+            0
+        )
+
+        self.modified_filter.setCurrentIndex(
+            0
+        )
+
+        self.sort_filter.setCurrentIndex(
+            0
+        )
+
+        self.queue_search()
+
+    # ========================================================
+    # Searching
+    # ========================================================
+
+    def queue_search(
+        self,
+        *_args,
+    ):
+        self.search_timer.start()
+
+    def perform_search(self):
+        query = (
+            self.search_input
+            .text()
+            .strip()
+        )
+
+        root = (
+            self.root_filter
+            .currentData()
+        )
+
+        extension = (
+            self.extension_filter
+            .currentData()
+        )
+
+        minimum_size = (
+            self.size_filter
+            .currentData()
+            or 0
+        )
+
+        modified_age = (
+            self.modified_filter
+            .currentData()
+        )
+
+        sort_mode = (
+            self.sort_filter
+            .currentData()
+            or "relevance"
+        )
+
+        where_clauses = []
+        parameters = []
+
+        # ----------------------------------------------------
+        # Multi-word search
+        # ----------------------------------------------------
+
+        terms = [
+            term
+            for term
+            in query.split()
+            if term
+        ]
+
+        for term in terms:
+            wildcard = (
+                f"%{term}%"
+            )
+
+            where_clauses.append(
+                """
+                (
+                    name LIKE ? COLLATE NOCASE
+                    OR
+                    path LIKE ? COLLATE NOCASE
                 )
+                """
+            )
 
-                rows = connection.execute(
-                    """
-                    SELECT
-                        name,
-                        parent,
-                        extension,
-                        size,
-                        modified,
-                        path
-                    FROM files
-                    WHERE
-                        name LIKE ? COLLATE NOCASE
-                        OR path LIKE ? COLLATE NOCASE
-                    ORDER BY
-                        CASE
-                            WHEN name LIKE ? COLLATE NOCASE
-                            THEN 0
-                            ELSE 1
-                        END,
-                        name COLLATE NOCASE
-                    LIMIT 500
-                    """,
-                    (
-                        wildcard,
-                        wildcard,
-                        wildcard,
-                    ),
-                ).fetchall()
+            parameters.extend(
+                [
+                    wildcard,
+                    wildcard,
+                ]
+            )
 
-            else:
-                rows = connection.execute(
-                    """
-                    SELECT
-                        name,
-                        parent,
-                        extension,
-                        size,
-                        modified,
-                        path
-                    FROM files
-                    ORDER BY
-                        modified DESC
-                    LIMIT 250
-                    """
-                ).fetchall()
+        # ----------------------------------------------------
+        # Filters
+        # ----------------------------------------------------
+
+        if root:
+            where_clauses.append(
+                "root_path = ?"
+            )
+
+            parameters.append(
+                root
+            )
+
+        if extension:
+            where_clauses.append(
+                "extension = ? COLLATE NOCASE"
+            )
+
+            parameters.append(
+                extension
+            )
+
+        if minimum_size > 0:
+            where_clauses.append(
+                "size >= ?"
+            )
+
+            parameters.append(
+                minimum_size
+            )
+
+        if modified_age is not None:
+            cutoff = (
+                time.time()
+                - modified_age
+            )
+
+            where_clauses.append(
+                "modified >= ?"
+            )
+
+            parameters.append(
+                cutoff
+            )
+
+        where_sql = ""
+
+        if where_clauses:
+            where_sql = (
+                "WHERE "
+                + " AND ".join(
+                    where_clauses
+                )
+            )
+
+        # ----------------------------------------------------
+        # Sort order
+        # ----------------------------------------------------
+
+        if (
+            sort_mode == "relevance"
+            and query
+        ):
+            first_term = terms[0]
+
+            exact = first_term
+
+            prefix = (
+                f"{first_term}%"
+            )
+
+            relevance_sql = """
+                CASE
+                    WHEN name = ? COLLATE NOCASE
+                        THEN 0
+
+                    WHEN name LIKE ? COLLATE NOCASE
+                        THEN 1
+
+                    ELSE 2
+                END,
+                name COLLATE NOCASE
+            """
+
+            select_parameters = (
+                parameters
+                + [
+                    exact,
+                    prefix,
+                ]
+            )
+
+        elif sort_mode == "name":
+            relevance_sql = (
+                "name COLLATE NOCASE ASC"
+            )
+
+            select_parameters = (
+                parameters
+            )
+
+        elif sort_mode == "size":
+            relevance_sql = (
+                "size DESC"
+            )
+
+            select_parameters = (
+                parameters
+            )
+
+        else:
+            relevance_sql = (
+                "modified DESC"
+            )
+
+            select_parameters = (
+                parameters
+            )
+
+        connection = connect_database()
+
+        try:
+            total_results = connection.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM files
+                {where_sql}
+                """,
+                parameters,
+            ).fetchone()[0]
+
+            rows = connection.execute(
+                f"""
+                SELECT
+                    name,
+                    parent,
+                    extension,
+                    size,
+                    modified,
+                    path
+                FROM files
+                {where_sql}
+                ORDER BY
+                    {relevance_sql}
+                LIMIT 500
+                """,
+                select_parameters,
+            ).fetchall()
 
         finally:
             connection.close()
 
         self.populate_results(
-            rows
+            rows,
+            total_results,
         )
 
     def populate_results(
         self,
         rows,
+        total_results,
     ):
         self.results_table.setUpdatesEnabled(
             False
@@ -817,9 +1340,11 @@ class SearchPage(QWidget):
             )
 
             modified_text = (
-                datetime.datetime.fromtimestamp(
+                datetime.datetime
+                .fromtimestamp(
                     modified
-                ).strftime(
+                )
+                .strftime(
                     "%Y-%m-%d %H:%M"
                 )
             )
@@ -864,11 +1389,23 @@ class SearchPage(QWidget):
 
         self.results_table.viewport().update()
 
-        self.results_status.setText(
-            f"{len(rows):,} results"
-        )
+        if total_results > len(rows):
+            self.results_status.setText(
+                f"Showing {len(rows):,} of "
+                f"{total_results:,} results"
+            )
+
+        else:
+            self.results_status.setText(
+                f"{total_results:,} result"
+                f"{'' if total_results == 1 else 's'}"
+            )
 
         self.update_action_buttons()
+
+    # ========================================================
+    # Index information
+    # ========================================================
 
     def refresh_index_status(self):
         connection = connect_database()
@@ -893,16 +1430,34 @@ class SearchPage(QWidget):
         finally:
             connection.close()
 
+        database_path = (
+            get_database_path()
+        )
+
+        try:
+            database_size = os.path.getsize(
+                database_path
+            )
+
+        except OSError:
+            database_size = 0
+
         if file_count == 0:
             self.index_status.setText(
                 "No files indexed yet."
             )
 
         else:
+            location_word = (
+                "location"
+                if root_count == 1
+                else "locations"
+            )
+
             self.index_status.setText(
-                f"{file_count:,} files indexed "
-                f"across {root_count:,} location"
-                f"{'' if root_count == 1 else 's'}."
+                f"{file_count:,} files indexed across "
+                f"{root_count:,} {location_word} · "
+                f"Index size {self.format_size(database_size)}"
             )
 
     # ========================================================
@@ -919,7 +1474,10 @@ class SearchPage(QWidget):
         if not selected_rows:
             return None
 
-        row = selected_rows[0].row()
+        row = (
+            selected_rows[0]
+            .row()
+        )
 
         item = self.results_table.item(
             row,
@@ -939,12 +1497,34 @@ class SearchPage(QWidget):
             is not None
         )
 
+        self.copy_path_button.setEnabled(
+            has_selection
+        )
+
         self.open_button.setEnabled(
             has_selection
         )
 
         self.folder_button.setEnabled(
             has_selection
+        )
+
+    def copy_selected_path(self):
+        path = self.get_selected_path()
+
+        if not path:
+            return
+
+        clipboard = (
+            QApplication.clipboard()
+        )
+
+        clipboard.setText(
+            path
+        )
+
+        self.results_status.setText(
+            "Path copied to clipboard"
         )
 
     def open_selected(self):
@@ -976,7 +1556,9 @@ class SearchPage(QWidget):
                 [
                     "explorer.exe",
                     "/select,",
-                    os.path.normpath(path),
+                    os.path.normpath(
+                        path
+                    ),
                 ]
             )
 
@@ -996,7 +1578,9 @@ class SearchPage(QWidget):
     # ========================================================
 
     @staticmethod
-    def format_size(size):
+    def format_size(
+        size,
+    ):
         if size >= 1024 ** 4:
             return (
                 f"{size / (1024 ** 4):.2f} TB"
