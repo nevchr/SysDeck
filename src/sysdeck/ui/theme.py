@@ -391,4 +391,34 @@ QPushButton#dashboardAction:hover {
 QPushButton#dashboardAction:pressed {
     background-color: #2b2b2b;
 }
+QTabWidget#filesTabs::pane {
+    background-color: #171717;
+    border: none;
+}
+
+QTabWidget#filesTabs QTabBar {
+    background-color: #171717;
+}
+
+QTabWidget#filesTabs QTabBar::tab {
+    background-color: transparent;
+    color: #888888;
+
+    border: none;
+    border-bottom: 2px solid transparent;
+
+    padding: 11px 18px;
+
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QTabWidget#filesTabs QTabBar::tab:hover {
+    color: #d0d0d0;
+}
+
+QTabWidget#filesTabs QTabBar::tab:selected {
+    color: #f2f2f2;
+    border-bottom: 2px solid #bdbdbd;
+}
 """

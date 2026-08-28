@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from .dashboard_page import DashboardPage
-from .files_page import FilesPage
+from .files_hub import FilesHub
 from .performance_page import PerformancePage
 from .processes_page import ProcessesPage
 from .search_page import SearchPage
@@ -307,7 +307,7 @@ class MainWindow(QMainWindow):
         )
 
         self.files_page = (
-            FilesPage()
+            FilesHub()
         )
 
         self.vault_page = PlaceholderPage(
