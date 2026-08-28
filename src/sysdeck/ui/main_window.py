@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .files_page import FilesPage
 from .performance_page import PerformancePage
 from .processes_page import ProcessesPage
 from .search_page import SearchPage
@@ -115,7 +116,9 @@ class MainWindow(QMainWindow):
             0,
         )
 
-        root_layout.setSpacing(0)
+        root_layout.setSpacing(
+            0
+        )
 
         sidebar = self.create_sidebar()
 
@@ -170,7 +173,9 @@ class MainWindow(QMainWindow):
             14,
         )
 
-        layout.setSpacing(4)
+        layout.setSpacing(
+            4
+        )
 
         title = QLabel(
             "SysDeck"
@@ -184,7 +189,9 @@ class MainWindow(QMainWindow):
             title
         )
 
-        layout.addSpacing(18)
+        layout.addSpacing(
+            18
+        )
 
         navigation = [
             ("Dashboard", 0),
@@ -285,10 +292,7 @@ class MainWindow(QMainWindow):
         )
 
         self.pages.addWidget(
-            PlaceholderPage(
-                "Files",
-                "Find duplicates and organize files.",
-            )
+            FilesPage()
         )
 
         self.pages.addWidget(
