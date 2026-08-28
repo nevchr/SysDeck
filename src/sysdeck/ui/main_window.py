@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .dashboard_page import DashboardPage
 from .files_page import FilesPage
 from .performance_page import PerformancePage
 from .processes_page import ProcessesPage
@@ -28,7 +29,9 @@ class PlaceholderPage(QWidget):
     ):
         super().__init__()
 
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(
+            self
+        )
 
         layout.setContentsMargins(
             46,
@@ -37,7 +40,9 @@ class PlaceholderPage(QWidget):
             40,
         )
 
-        layout.setSpacing(8)
+        layout.setSpacing(
+            8
+        )
 
         layout.setAlignment(
             Qt.AlignmentFlag.AlignTop
@@ -254,7 +259,9 @@ class MainWindow(QMainWindow):
 
         button.clicked.connect(
             lambda checked=False, index=page_index:
-            self.switch_page(index)
+            self.switch_page(
+                index
+            )
         )
 
         self.button_group.addButton(
@@ -268,11 +275,16 @@ class MainWindow(QMainWindow):
         return button
 
     def create_pages(self):
+        self.dashboard_page = (
+            DashboardPage()
+        )
+
+        self.dashboard_page.navigate_requested.connect(
+            self.switch_page
+        )
+
         self.pages.addWidget(
-            PlaceholderPage(
-                "Dashboard",
-                "A quick overview of your system.",
-            )
+            self.dashboard_page
         )
 
         self.pages.addWidget(
@@ -316,3 +328,14 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(
             index
         )
+
+        if (
+            0
+            <= index
+            < len(self.nav_buttons)
+        ):
+            self.nav_buttons[
+                index
+            ].setChecked(
+                True
+            )

@@ -364,4 +364,31 @@ QScrollBar::add-line:horizontal,
 QScrollBar::sub-line:horizontal {
     width: 0px;
 }
+#sectionTitle {
+    color: #eeeeee;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+QPushButton#dashboardAction {
+    background-color: #1e1e1e;
+    color: #d8d8d8;
+
+    border: 1px solid #292929;
+    border-radius: 10px;
+
+    padding: 14px;
+
+    text-align: left;
+}
+
+QPushButton#dashboardAction:hover {
+    background-color: #252525;
+    border-color: #363636;
+    color: #ffffff;
+}
+
+QPushButton#dashboardAction:pressed {
+    background-color: #2b2b2b;
+}
 """
