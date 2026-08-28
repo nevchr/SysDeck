@@ -310,4 +310,56 @@ QScrollBar::add-line:horizontal,
 QScrollBar::sub-line:horizontal {
     width: 0px;
 }
+#searchStatus {
+    color: #777777;
+    font-size: 12px;
+}
+
+QLineEdit#searchInput {
+    background-color: #1e1e1e;
+    color: #f2f2f2;
+
+    border: 1px solid #303030;
+    border-radius: 10px;
+
+    padding: 12px 14px;
+
+    font-size: 15px;
+
+    selection-background-color: #444444;
+}
+
+QLineEdit#searchInput:hover {
+    border-color: #3a3a3a;
+}
+
+QLineEdit#searchInput:focus {
+    border-color: #505050;
+}
+
+QTableWidget#searchResults {
+    background-color: #1b1b1b;
+    alternate-background-color: #1e1e1e;
+
+    color: #dedede;
+
+    border: 1px solid #292929;
+    border-radius: 10px;
+
+    outline: none;
+
+    selection-background-color: #303030;
+    selection-color: #ffffff;
+}
+
+QTableWidget#searchResults::item {
+    padding-left: 8px;
+    padding-right: 8px;
+    border: none;
+}
+
+QTableWidget#searchResults::item:selected {
+    background-color: #303030;
+    color: #ffffff;
+}
 """
