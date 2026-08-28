@@ -1,11 +1,16 @@
+import datetime
 import hashlib
 import os
+import re
 import subprocess
+
+from send2trash import send2trash
 
 from PySide6.QtCore import (
     QObject,
     QThread,
     Qt,
+    QTimer,
     Signal,
     Slot,
 )
@@ -16,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -27,7 +33,7 @@ from ..core.database import connect_database
 
 
 # ============================================================
-# Background duplicate scanner
+# Duplicate scanner
 # ============================================================
 
 class DuplicateScanWorker(QObject):
@@ -58,8 +64,7 @@ class DuplicateScanWorker(QObject):
                 )
                 return
 
-            # Only retrieve files whose size is shared by
-            # at least one other indexed file.
+            # Only files sharing a size can possibly be exact duplicates.
             rows = connection.execute(
                 """
                 SELECT
@@ -83,13 +88,12 @@ class DuplicateScanWorker(QObject):
             connection.close()
             connection = None
 
-            # ------------------------------------------------
-            # Group potential duplicates by file size
-            # ------------------------------------------------
-
             size_groups = {}
-
             skipped_count = 0
+
+            # ------------------------------------------------
+            # Validate indexed files and collect timestamps
+            # ------------------------------------------------
 
             for size, path, name, parent in rows:
                 if (
@@ -103,30 +107,43 @@ class DuplicateScanWorker(QObject):
                         skipped_count += 1
                         continue
 
-                    # The index may be stale. If the current
-                    # size differs, don't compare it using the
-                    # old indexed metadata.
-                    if os.path.getsize(path) != size:
+                    stat = os.stat(path)
+
+                    if stat.st_size != size:
                         skipped_count += 1
                         continue
 
-                except OSError:
+                    created = getattr(
+                        stat,
+                        "st_birthtime",
+                        stat.st_ctime,
+                    )
+
+                    accessed = stat.st_atime
+                    modified = stat.st_mtime
+
+                except (
+                    PermissionError,
+                    FileNotFoundError,
+                    OSError,
+                ):
                     skipped_count += 1
                     continue
 
                 size_groups.setdefault(
                     size,
-                    []
+                    [],
                 ).append(
                     {
                         "path": path,
                         "name": name,
                         "parent": parent,
+                        "created": created,
+                        "accessed": accessed,
+                        "modified": modified,
                     }
                 )
 
-            # Remove groups that no longer contain two
-            # accessible files.
             size_groups = {
                 size: files
                 for size, files
@@ -153,13 +170,10 @@ class DuplicateScanWorker(QObject):
                 return
 
             # ------------------------------------------------
-            # Stage 1:
-            # Quick hash first + last pieces of files.
-            # This avoids fully hashing every same-sized file.
+            # Stage 1 — quick content fingerprint
             # ------------------------------------------------
 
             quick_groups = {}
-
             processed = 0
 
             for size, files in size_groups.items():
@@ -192,7 +206,7 @@ class DuplicateScanWorker(QObject):
 
                     quick_groups.setdefault(
                         key,
-                        []
+                        [],
                     ).append(
                         file_info
                     )
@@ -212,8 +226,6 @@ class DuplicateScanWorker(QObject):
                             }
                         )
 
-            # Only quick-hash groups with 2+ files need
-            # expensive full SHA-256 verification.
             verification_groups = {
                 key: files
                 for key, files
@@ -228,12 +240,10 @@ class DuplicateScanWorker(QObject):
             )
 
             # ------------------------------------------------
-            # Stage 2:
-            # Full SHA-256 verification.
+            # Stage 2 — full SHA-256 verification
             # ------------------------------------------------
 
             full_hash_groups = {}
-
             verified = 0
 
             for (
@@ -269,7 +279,7 @@ class DuplicateScanWorker(QObject):
 
                     full_hash_groups.setdefault(
                         key,
-                        []
+                        [],
                     ).append(
                         file_info
                     )
@@ -290,7 +300,7 @@ class DuplicateScanWorker(QObject):
                         )
 
             # ------------------------------------------------
-            # Exact duplicate groups
+            # Confirm duplicate groups + choose keeper
             # ------------------------------------------------
 
             duplicate_groups = []
@@ -305,6 +315,10 @@ class DuplicateScanWorker(QObject):
 
                 if len(files) < 2:
                     continue
+
+                keeper = self.choose_keeper(
+                    files
+                )
 
                 redundant_copies = (
                     len(files) - 1
@@ -329,10 +343,10 @@ class DuplicateScanWorker(QObject):
                         "files": files,
                         "copies": len(files),
                         "wasted": wasted_space,
+                        "keeper_path": keeper["path"],
                     }
                 )
 
-            # Most recoverable space first.
             duplicate_groups.sort(
                 key=lambda group: (
                     group["wasted"],
@@ -367,6 +381,72 @@ class DuplicateScanWorker(QObject):
             if connection is not None:
                 connection.close()
 
+    # ========================================================
+    # Keeper recommendation
+    # ========================================================
+
+    @staticmethod
+    def filename_penalty(name):
+        """
+        Lower score = more likely to be the original filename.
+        """
+
+        stem, _extension = os.path.splitext(
+            name
+        )
+
+        penalty = 0
+
+        duplicate_patterns = [
+            r"\(\d+\)$",
+            r"\s-\scopy(?:\s\d+)?$",
+            r"\scopy(?:\s\d+)?$",
+            r"_copy(?:_\d+)?$",
+        ]
+
+        for pattern in duplicate_patterns:
+            if re.search(
+                pattern,
+                stem,
+                re.IGNORECASE,
+            ):
+                penalty += 10
+
+        return penalty
+
+    @classmethod
+    def choose_keeper(
+        cls,
+        files,
+    ):
+        """
+        Preference order:
+
+        1. Cleaner filename
+        2. Oldest creation time
+        3. Most recently accessed
+        4. Stable path fallback
+
+        Access time is intentionally only a tiebreaker because
+        Windows/NTFS access timestamps are not always reliable.
+        """
+
+        return min(
+            files,
+            key=lambda file_info: (
+                cls.filename_penalty(
+                    file_info["name"]
+                ),
+                file_info["created"],
+                -file_info["accessed"],
+                file_info["path"].lower(),
+            ),
+        )
+
+    # ========================================================
+    # Hashing
+    # ========================================================
+
     def quick_hash(
         self,
         path,
@@ -380,15 +460,12 @@ class DuplicateScanWorker(QObject):
             path,
             "rb",
         ) as file:
-            first_chunk = file.read(
-                self.QUICK_HASH_SIZE
-            )
-
             digest.update(
-                first_chunk
+                file.read(
+                    self.QUICK_HASH_SIZE
+                )
             )
 
-            # For larger files, also inspect the end.
             if size > (
                 self.QUICK_HASH_SIZE * 2
             ):
@@ -429,6 +506,112 @@ class DuplicateScanWorker(QObject):
 
 
 # ============================================================
+# Recycle Bin worker
+# ============================================================
+
+class CleanupWorker(QObject):
+    progress = Signal(object)
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        paths,
+    ):
+        super().__init__()
+
+        self.paths = paths
+
+    @Slot()
+    def cleanup(self):
+        successful = []
+        failed = []
+
+        try:
+            total = len(
+                self.paths
+            )
+
+            for index, path in enumerate(
+                self.paths,
+                start=1,
+            ):
+                if (
+                    QThread.currentThread()
+                    .isInterruptionRequested()
+                ):
+                    return
+
+                try:
+                    if not os.path.exists(path):
+                        failed.append(
+                            (
+                                path,
+                                "File no longer exists",
+                            )
+                        )
+
+                        continue
+
+                    send2trash(
+                        path
+                    )
+
+                    successful.append(
+                        path
+                    )
+
+                except Exception as error:
+                    failed.append(
+                        (
+                            path,
+                            str(error),
+                        )
+                    )
+
+                self.progress.emit(
+                    {
+                        "processed": index,
+                        "total": total,
+                    }
+                )
+
+            # Remove successfully recycled files from the index.
+            if successful:
+                connection = connect_database()
+
+                try:
+                    connection.executemany(
+                        """
+                        DELETE FROM files
+                        WHERE path = ?
+                        """,
+                        [
+                            (path,)
+                            for path
+                            in successful
+                        ],
+                    )
+
+                    connection.commit()
+
+                finally:
+                    connection.close()
+
+            self.finished.emit(
+                {
+                    "successful": successful,
+                    "failed": failed,
+                }
+            )
+
+        except Exception as error:
+            self.failed.emit(
+                str(error)
+            )
+
+
+# ============================================================
 # Files page
 # ============================================================
 
@@ -439,6 +622,14 @@ class FilesPage(QWidget):
         self.scan_thread = None
         self.scan_worker = None
 
+        self.cleanup_thread = None
+        self.cleanup_worker = None
+
+        self.duplicate_groups = []
+
+        self.updating_table = False
+        self.rescan_after_cleanup = False
+
         self.setup_ui()
         self.refresh_index_info()
 
@@ -446,7 +637,7 @@ class FilesPage(QWidget):
 
         if app is not None:
             app.aboutToQuit.connect(
-                self.shutdown_scanner
+                self.shutdown_workers
             )
 
     # ========================================================
@@ -464,7 +655,7 @@ class FilesPage(QWidget):
         )
 
         layout.setSpacing(
-            18
+            16
         )
 
         # ----------------------------------------------------
@@ -485,7 +676,7 @@ class FilesPage(QWidget):
         )
 
         description = QLabel(
-            "Find exact duplicate files using your existing SysDeck index."
+            "Review exact duplicates and safely clean redundant copies."
         )
 
         description.setObjectName(
@@ -539,7 +730,7 @@ class FilesPage(QWidget):
         )
 
         self.scan_status = QLabel(
-            "Nothing is deleted automatically."
+            "Nothing is ever permanently deleted."
         )
 
         self.scan_status.setObjectName(
@@ -555,7 +746,7 @@ class FilesPage(QWidget):
         )
 
         # ----------------------------------------------------
-        # Summary cards
+        # Summary
         # ----------------------------------------------------
 
         self.summary_container = QWidget()
@@ -636,10 +827,10 @@ class FilesPage(QWidget):
         )
 
         # ----------------------------------------------------
-        # Actions
+        # File actions
         # ----------------------------------------------------
 
-        action_row = QHBoxLayout()
+        file_actions = QHBoxLayout()
 
         self.result_status = QLabel(
             "No scan results"
@@ -697,48 +888,154 @@ class FilesPage(QWidget):
             self.open_selected_folder
         )
 
-        action_row.addWidget(
+        file_actions.addWidget(
             self.result_status
         )
 
-        action_row.addStretch()
+        file_actions.addStretch()
 
-        action_row.addWidget(
+        file_actions.addWidget(
             self.copy_path_button
         )
 
-        action_row.addWidget(
+        file_actions.addWidget(
             self.open_button
         )
 
-        action_row.addWidget(
+        file_actions.addWidget(
             self.folder_button
         )
 
         layout.addLayout(
-            action_row
+            file_actions
         )
 
         # ----------------------------------------------------
-        # Duplicate results
+        # Cleanup actions
+        # ----------------------------------------------------
+
+        cleanup_actions = QHBoxLayout()
+
+        self.selection_status = QLabel(
+            "0 files selected · 0 B"
+        )
+
+        self.selection_status.setObjectName(
+            "searchStatus"
+        )
+
+        self.select_all_button = QPushButton(
+            "Select All Duplicates"
+        )
+
+        self.select_all_button.setObjectName(
+            "secondaryButton"
+        )
+
+        self.select_all_button.setEnabled(
+            False
+        )
+
+        self.select_all_button.clicked.connect(
+            self.select_all_duplicates
+        )
+
+        self.clear_selection_button = QPushButton(
+            "Clear Selection"
+        )
+
+        self.clear_selection_button.setObjectName(
+            "secondaryButton"
+        )
+
+        self.clear_selection_button.setEnabled(
+            False
+        )
+
+        self.clear_selection_button.clicked.connect(
+            self.clear_cleanup_selection
+        )
+
+        self.make_keeper_button = QPushButton(
+            "Make Keeper"
+        )
+
+        self.make_keeper_button.setObjectName(
+            "secondaryButton"
+        )
+
+        self.make_keeper_button.setEnabled(
+            False
+        )
+
+        self.make_keeper_button.clicked.connect(
+            self.make_selected_keeper
+        )
+
+        self.cleanup_button = QPushButton(
+            "Move Selected to Recycle Bin"
+        )
+
+        self.cleanup_button.setObjectName(
+            "primaryButton"
+        )
+
+        self.cleanup_button.setEnabled(
+            False
+        )
+
+        self.cleanup_button.clicked.connect(
+            self.recycle_selected
+        )
+
+        cleanup_actions.addWidget(
+            self.selection_status
+        )
+
+        cleanup_actions.addStretch()
+
+        cleanup_actions.addWidget(
+            self.select_all_button
+        )
+
+        cleanup_actions.addWidget(
+            self.clear_selection_button
+        )
+
+        cleanup_actions.addWidget(
+            self.make_keeper_button
+        )
+
+        cleanup_actions.addWidget(
+            self.cleanup_button
+        )
+
+        layout.addLayout(
+            cleanup_actions
+        )
+
+        # ----------------------------------------------------
+        # Results table
         # ----------------------------------------------------
 
         self.results_table = QTableWidget(
             0,
-            4,
+            7,
         )
 
-        # Reuse Search's table styling.
         self.results_table.setObjectName(
             "searchResults"
         )
 
         self.results_table.setHorizontalHeaderLabels(
             [
+                "Remove",
                 "Group",
+                "Status",
                 "Name",
                 "Size",
                 "Folder",
+                "Created",
             ]
         )
 
@@ -768,6 +1065,10 @@ class FilesPage(QWidget):
             self.update_action_buttons
         )
 
+        self.results_table.itemChanged.connect(
+            self.handle_item_changed
+        )
+
         self.results_table.itemDoubleClicked.connect(
             lambda _item:
             self.open_selected()
@@ -785,7 +1086,7 @@ class FilesPage(QWidget):
 
         header_view.setSectionResizeMode(
             1,
-            QHeaderView.ResizeMode.Stretch,
+            QHeaderView.ResizeMode.ResizeToContents,
         )
 
         header_view.setSectionResizeMode(
@@ -796,6 +1097,21 @@ class FilesPage(QWidget):
         header_view.setSectionResizeMode(
             3,
             QHeaderView.ResizeMode.Stretch,
+        )
+
+        header_view.setSectionResizeMode(
+            4,
+            QHeaderView.ResizeMode.ResizeToContents,
+        )
+
+        header_view.setSectionResizeMode(
+            5,
+            QHeaderView.ResizeMode.Stretch,
+        )
+
+        header_view.setSectionResizeMode(
+            6,
+            QHeaderView.ResizeMode.ResizeToContents,
         )
 
         layout.addWidget(
@@ -852,7 +1168,7 @@ class FilesPage(QWidget):
         return card
 
     # ========================================================
-    # Index info
+    # Index information
     # ========================================================
 
     def showEvent(
@@ -916,7 +1232,7 @@ class FilesPage(QWidget):
         )
 
     # ========================================================
-    # Duplicate scan
+    # Duplicate scanning
     # ========================================================
 
     def start_duplicate_scan(self):
@@ -930,10 +1246,28 @@ class FilesPage(QWidget):
             False
         )
 
+        self.cleanup_button.setEnabled(
+            False
+        )
+
+        self.select_all_button.setEnabled(
+            False
+        )
+
+        self.clear_selection_button.setEnabled(
+            False
+        )
+
         self.summary_container.hide()
+
+        self.duplicate_groups = []
 
         self.results_table.setRowCount(
             0
+        )
+
+        self.selection_status.setText(
+            "0 files selected · 0 B"
         )
 
         self.result_status.setText(
@@ -999,26 +1333,11 @@ class FilesPage(QWidget):
         self,
         progress,
     ):
-        phase = progress[
-            "phase"
-        ]
-
-        processed = progress[
-            "processed"
-        ]
-
-        total = progress[
-            "total"
-        ]
-
-        skipped = progress[
-            "skipped"
-        ]
-
         self.scan_status.setText(
-            f"{phase}... "
-            f"{processed:,} / {total:,} files · "
-            f"{skipped:,} skipped"
+            f"{progress['phase']}... "
+            f"{progress['processed']:,} / "
+            f"{progress['total']:,} files · "
+            f"{progress['skipped']:,} skipped"
         )
 
     @Slot(object)
@@ -1030,65 +1349,55 @@ class FilesPage(QWidget):
             True
         )
 
-        groups = results[
-            "groups"
-        ]
-
-        duplicate_copies = results[
-            "duplicate_copies"
-        ]
-
-        potential_savings = results[
-            "potential_savings"
-        ]
-
-        skipped = results[
-            "skipped"
-        ]
-
-        candidate_files = results[
-            "candidate_files"
-        ]
+        self.duplicate_groups = (
+            results["groups"]
+        )
 
         self.groups_value.setText(
-            f"{len(groups):,}"
+            f"{len(self.duplicate_groups):,}"
         )
 
         self.copies_value.setText(
-            f"{duplicate_copies:,}"
+            f"{results['duplicate_copies']:,}"
         )
 
         self.savings_value.setText(
             self.format_size(
-                potential_savings
+                results["potential_savings"]
             )
         )
 
         self.summary_container.show()
 
         self.populate_results(
-            groups
+            self.duplicate_groups
         )
 
-        if groups:
-            self.scan_status.setText(
-                f"Scan complete · "
-                f"{candidate_files:,} candidate files checked · "
-                f"{skipped:,} skipped"
-            )
+        has_groups = bool(
+            self.duplicate_groups
+        )
 
+        self.select_all_button.setEnabled(
+            has_groups
+        )
+
+        self.clear_selection_button.setEnabled(
+            has_groups
+        )
+
+        self.scan_status.setText(
+            f"Scan complete · "
+            f"{results['candidate_files']:,} candidate files checked · "
+            f"{results['skipped']:,} skipped"
+        )
+
+        if has_groups:
             self.result_status.setText(
-                f"{len(groups):,} exact duplicate "
-                f"group{'' if len(groups) == 1 else 's'}"
+                f"{len(self.duplicate_groups):,} exact duplicate "
+                f"group{'' if len(self.duplicate_groups) == 1 else 's'}"
             )
 
         else:
-            self.scan_status.setText(
-                f"Scan complete · "
-                f"{candidate_files:,} candidate files checked · "
-                f"{skipped:,} skipped"
-            )
-
             self.result_status.setText(
                 "No exact duplicates found"
             )
@@ -1117,31 +1426,24 @@ class FilesPage(QWidget):
         self.scan_thread = None
         self.scan_worker = None
 
-    def shutdown_scanner(self):
-        if (
-            self.scan_thread is not None
-            and self.scan_thread.isRunning()
-        ):
-            self.scan_thread.requestInterruption()
-
-            self.scan_thread.quit()
-
-            self.scan_thread.wait(
-                1500
-            )
-
     # ========================================================
-    # Results
+    # Result table
     # ========================================================
 
     def populate_results(
         self,
         groups,
+        checked_paths=None,
     ):
+        if checked_paths is None:
+            checked_paths = set()
+
         row_count = sum(
             len(group["files"])
             for group in groups
         )
+
+        self.updating_table = True
 
         self.results_table.setUpdatesEnabled(
             False
@@ -1153,25 +1455,99 @@ class FilesPage(QWidget):
 
         row = 0
 
-        for group_number, group in enumerate(
-            groups,
-            start=1,
+        for group_index, group in enumerate(
+            groups
         ):
-            group_label = (
-                f"#{group_number} "
-                f"({group['copies']} copies)"
+            group_number = (
+                group_index + 1
             )
 
-            for file_info in group[
-                "files"
-            ]:
+            keeper_path = (
+                group["keeper_path"]
+            )
+
+            # Show keeper first.
+            ordered_files = sorted(
+                group["files"],
+                key=lambda file_info:
+                    file_info["path"] != keeper_path,
+            )
+
+            for file_info in ordered_files:
                 path = file_info[
                     "path"
                 ]
 
-                group_item = QTableWidgetItem(
-                    group_label
+                is_keeper = (
+                    path == keeper_path
                 )
+
+                # --------------------------------------------
+                # Remove checkbox
+                # --------------------------------------------
+
+                remove_item = QTableWidgetItem()
+
+                remove_item.setData(
+                    Qt.ItemDataRole.UserRole,
+                    group["size"],
+                )
+
+                if is_keeper:
+                    remove_item.setText(
+                        "—"
+                    )
+
+                    remove_item.setFlags(
+                        Qt.ItemFlag.ItemIsEnabled
+                        | Qt.ItemFlag.ItemIsSelectable
+                    )
+
+                else:
+                    remove_item.setFlags(
+                        Qt.ItemFlag.ItemIsEnabled
+                        | Qt.ItemFlag.ItemIsSelectable
+                        | Qt.ItemFlag.ItemIsUserCheckable
+                    )
+
+                    remove_item.setCheckState(
+                        Qt.CheckState.Checked
+                        if path in checked_paths
+                        else Qt.CheckState.Unchecked
+                    )
+
+                # --------------------------------------------
+                # Group
+                # --------------------------------------------
+
+                group_item = QTableWidgetItem(
+                    f"#{group_number}"
+                )
+
+                group_item.setData(
+                    Qt.ItemDataRole.UserRole,
+                    group_index,
+                )
+
+                # --------------------------------------------
+                # Status
+                # --------------------------------------------
+
+                status_item = QTableWidgetItem(
+                    "Suggested keep"
+                    if is_keeper
+                    else "Duplicate"
+                )
+
+                if is_keeper:
+                    status_item.setToolTip(
+                        "SysDeck recommends keeping this copy "
+                        "based on filename and file timestamps."
+                    )
+
+                # --------------------------------------------
+                # File data
+                # --------------------------------------------
 
                 name_item = QTableWidgetItem(
                     file_info["name"]
@@ -1180,6 +1556,11 @@ class FilesPage(QWidget):
                 name_item.setData(
                     Qt.ItemDataRole.UserRole,
                     path,
+                )
+
+                name_item.setData(
+                    Qt.ItemDataRole.UserRole + 1,
+                    group_index,
                 )
 
                 size_item = QTableWidgetItem(
@@ -1201,28 +1582,52 @@ class FilesPage(QWidget):
                     file_info["parent"]
                 )
 
+                created_item = QTableWidgetItem(
+                    self.format_timestamp(
+                        file_info["created"]
+                    )
+                )
+
                 self.results_table.setItem(
                     row,
                     0,
-                    group_item,
+                    remove_item,
                 )
 
                 self.results_table.setItem(
                     row,
                     1,
-                    name_item,
+                    group_item,
                 )
 
                 self.results_table.setItem(
                     row,
                     2,
-                    size_item,
+                    status_item,
                 )
 
                 self.results_table.setItem(
                     row,
                     3,
+                    name_item,
+                )
+
+                self.results_table.setItem(
+                    row,
+                    4,
+                    size_item,
+                )
+
+                self.results_table.setItem(
+                    row,
+                    5,
                     folder_item,
+                )
+
+                self.results_table.setItem(
+                    row,
+                    6,
+                    created_item,
                 )
 
                 row += 1
@@ -1233,13 +1638,453 @@ class FilesPage(QWidget):
 
         self.results_table.viewport().update()
 
+        self.updating_table = False
+
         self.update_action_buttons()
+        self.update_selection_status()
+
+    def handle_item_changed(
+        self,
+        item,
+    ):
+        if self.updating_table:
+            return
+
+        if item.column() != 0:
+            return
+
+        self.update_selection_status()
 
     # ========================================================
-    # File actions
+    # Selection
     # ========================================================
 
-    def get_selected_path(self):
+    def select_all_duplicates(self):
+        self.updating_table = True
+
+        for row in range(
+            self.results_table.rowCount()
+        ):
+            item = self.results_table.item(
+                row,
+                0,
+            )
+
+            if item is None:
+                continue
+
+            if (
+                item.flags()
+                & Qt.ItemFlag.ItemIsUserCheckable
+            ):
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                )
+
+        self.updating_table = False
+
+        self.update_selection_status()
+
+    def clear_cleanup_selection(self):
+        self.updating_table = True
+
+        for row in range(
+            self.results_table.rowCount()
+        ):
+            item = self.results_table.item(
+                row,
+                0,
+            )
+
+            if item is None:
+                continue
+
+            if (
+                item.flags()
+                & Qt.ItemFlag.ItemIsUserCheckable
+            ):
+                item.setCheckState(
+                    Qt.CheckState.Unchecked
+                )
+
+        self.updating_table = False
+
+        self.update_selection_status()
+
+    def get_checked_paths(self):
+        selected = []
+
+        for row in range(
+            self.results_table.rowCount()
+        ):
+            remove_item = (
+                self.results_table.item(
+                    row,
+                    0,
+                )
+            )
+
+            name_item = (
+                self.results_table.item(
+                    row,
+                    3,
+                )
+            )
+
+            if (
+                remove_item is None
+                or name_item is None
+            ):
+                continue
+
+            if (
+                remove_item.flags()
+                & Qt.ItemFlag.ItemIsUserCheckable
+                and remove_item.checkState()
+                == Qt.CheckState.Checked
+            ):
+                path = name_item.data(
+                    Qt.ItemDataRole.UserRole
+                )
+
+                size = remove_item.data(
+                    Qt.ItemDataRole.UserRole
+                )
+
+                selected.append(
+                    (
+                        path,
+                        size,
+                    )
+                )
+
+        return selected
+
+    def update_selection_status(self):
+        selected = (
+            self.get_checked_paths()
+        )
+
+        count = len(
+            selected
+        )
+
+        total_size = sum(
+            size
+            for _path, size
+            in selected
+        )
+
+        self.selection_status.setText(
+            f"{count:,} file"
+            f"{'' if count == 1 else 's'} selected · "
+            f"{self.format_size(total_size)}"
+        )
+
+        self.cleanup_button.setEnabled(
+            count > 0
+        )
+
+    # ========================================================
+    # Manual keeper selection
+    # ========================================================
+
+    def make_selected_keeper(self):
+        selected = (
+            self.get_selected_info()
+        )
+
+        if selected is None:
+            return
+
+        path, group_index = selected
+
+        group = self.duplicate_groups[
+            group_index
+        ]
+
+        if path == group["keeper_path"]:
+            return
+
+        checked_paths = {
+            selected_path
+            for selected_path, _size
+            in self.get_checked_paths()
+        }
+
+        # The new keeper can never remain selected for cleanup.
+        checked_paths.discard(
+            path
+        )
+
+        group["keeper_path"] = (
+            path
+        )
+
+        self.populate_results(
+            self.duplicate_groups,
+            checked_paths,
+        )
+
+        self.result_status.setText(
+            "Keeper changed"
+        )
+
+    # ========================================================
+    # Recycle Bin cleanup
+    # ========================================================
+
+    def recycle_selected(self):
+        selected = (
+            self.get_checked_paths()
+        )
+
+        if not selected:
+            return
+
+        paths = [
+            path
+            for path, _size
+            in selected
+        ]
+
+        total_size = sum(
+            size
+            for _path, size
+            in selected
+        )
+
+        message = (
+            f"Move {len(paths):,} file"
+            f"{'' if len(paths) == 1 else 's'} "
+            f"({self.format_size(total_size)}) "
+            f"to the Windows Recycle Bin?\n\n"
+            "The suggested keeper in each group will remain untouched."
+        )
+
+        confirmation = QMessageBox.question(
+            self,
+            "Move duplicates to Recycle Bin",
+            message,
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if (
+            confirmation
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+
+        self.start_cleanup(
+            paths
+        )
+
+    def start_cleanup(
+        self,
+        paths,
+    ):
+        if (
+            self.cleanup_thread is not None
+            and self.cleanup_thread.isRunning()
+        ):
+            return
+
+        self.set_cleanup_controls_enabled(
+            False
+        )
+
+        self.scan_status.setText(
+            f"Moving {len(paths):,} selected files "
+            "to Recycle Bin..."
+        )
+
+        self.cleanup_thread = QThread(
+            self
+        )
+
+        self.cleanup_worker = CleanupWorker(
+            paths
+        )
+
+        self.cleanup_worker.moveToThread(
+            self.cleanup_thread
+        )
+
+        self.cleanup_thread.started.connect(
+            self.cleanup_worker.cleanup
+        )
+
+        self.cleanup_worker.progress.connect(
+            self.handle_cleanup_progress
+        )
+
+        self.cleanup_worker.finished.connect(
+            self.handle_cleanup_finished
+        )
+
+        self.cleanup_worker.failed.connect(
+            self.handle_cleanup_failed
+        )
+
+        self.cleanup_worker.finished.connect(
+            self.cleanup_thread.quit
+        )
+
+        self.cleanup_worker.failed.connect(
+            self.cleanup_thread.quit
+        )
+
+        self.cleanup_worker.finished.connect(
+            self.cleanup_worker.deleteLater
+        )
+
+        self.cleanup_worker.failed.connect(
+            self.cleanup_worker.deleteLater
+        )
+
+        self.cleanup_thread.finished.connect(
+            self.cleanup_cleanup_thread
+        )
+
+        self.cleanup_thread.start()
+
+    @Slot(object)
+    def handle_cleanup_progress(
+        self,
+        progress,
+    ):
+        self.scan_status.setText(
+            f"Moving to Recycle Bin... "
+            f"{progress['processed']:,} / "
+            f"{progress['total']:,}"
+        )
+
+    @Slot(object)
+    def handle_cleanup_finished(
+        self,
+        results,
+    ):
+        successful = results[
+            "successful"
+        ]
+
+        failed = results[
+            "failed"
+        ]
+
+        self.refresh_index_info()
+
+        if failed:
+            self.scan_status.setText(
+                f"Moved {len(successful):,} files to Recycle Bin · "
+                f"{len(failed):,} failed"
+            )
+
+            failed_preview = "\n".join(
+                path
+                for path, _error
+                in failed[:5]
+            )
+
+            QMessageBox.warning(
+                self,
+                "Some files could not be moved",
+                f"{len(failed):,} file"
+                f"{'' if len(failed) == 1 else 's'} "
+                "could not be moved.\n\n"
+                f"{failed_preview}",
+            )
+
+        else:
+            self.scan_status.setText(
+                f"Moved {len(successful):,} files "
+                "to Recycle Bin."
+            )
+
+        self.rescan_after_cleanup = (
+            len(successful) > 0
+        )
+
+    @Slot(str)
+    def handle_cleanup_failed(
+        self,
+        error,
+    ):
+        self.scan_status.setText(
+            f"Cleanup failed: {error}"
+        )
+
+        self.rescan_after_cleanup = False
+
+        self.set_cleanup_controls_enabled(
+            True
+        )
+
+    def cleanup_cleanup_thread(self):
+        if self.cleanup_thread is not None:
+            self.cleanup_thread.deleteLater()
+
+        self.cleanup_thread = None
+        self.cleanup_worker = None
+
+        should_rescan = (
+            self.rescan_after_cleanup
+        )
+
+        self.rescan_after_cleanup = False
+
+        if should_rescan:
+            QTimer.singleShot(
+                100,
+                self.start_duplicate_scan,
+            )
+
+        else:
+            self.set_cleanup_controls_enabled(
+                True
+            )
+
+    def set_cleanup_controls_enabled(
+        self,
+        enabled,
+    ):
+        has_groups = bool(
+            self.duplicate_groups
+        )
+
+        self.scan_button.setEnabled(
+            enabled
+        )
+
+        self.select_all_button.setEnabled(
+            enabled and has_groups
+        )
+
+        self.clear_selection_button.setEnabled(
+            enabled and has_groups
+        )
+
+        self.make_keeper_button.setEnabled(
+            enabled
+            and self.get_selected_info()
+            is not None
+        )
+
+        if enabled:
+            self.update_selection_status()
+
+        else:
+            self.cleanup_button.setEnabled(
+                False
+            )
+
+    # ========================================================
+    # Selected row
+    # ========================================================
+
+    def get_selected_info(self):
         selected_rows = (
             self.results_table
             .selectionModel()
@@ -1253,22 +2098,52 @@ class FilesPage(QWidget):
             0
         ].row()
 
-        item = self.results_table.item(
-            row,
-            1,
+        name_item = (
+            self.results_table.item(
+                row,
+                3,
+            )
         )
 
-        if item is None:
+        if name_item is None:
             return None
 
-        return item.data(
+        path = name_item.data(
             Qt.ItemDataRole.UserRole
         )
 
+        group_index = name_item.data(
+            Qt.ItemDataRole.UserRole + 1
+        )
+
+        if (
+            path is None
+            or group_index is None
+        ):
+            return None
+
+        return (
+            path,
+            group_index,
+        )
+
+    def get_selected_path(self):
+        selected = (
+            self.get_selected_info()
+        )
+
+        if selected is None:
+            return None
+
+        return selected[0]
+
     def update_action_buttons(self):
+        selected = (
+            self.get_selected_info()
+        )
+
         has_selection = (
-            self.get_selected_path()
-            is not None
+            selected is not None
         )
 
         self.copy_path_button.setEnabled(
@@ -1282,6 +2157,36 @@ class FilesPage(QWidget):
         self.folder_button.setEnabled(
             has_selection
         )
+
+        if not has_selection:
+            self.make_keeper_button.setEnabled(
+                False
+            )
+
+            return
+
+        path, group_index = selected
+
+        is_keeper = (
+            path
+            == self.duplicate_groups[
+                group_index
+            ]["keeper_path"]
+        )
+
+        cleanup_running = (
+            self.cleanup_thread is not None
+            and self.cleanup_thread.isRunning()
+        )
+
+        self.make_keeper_button.setEnabled(
+            not is_keeper
+            and not cleanup_running
+        )
+
+    # ========================================================
+    # Normal file actions
+    # ========================================================
 
     def copy_selected_path(self):
         path = self.get_selected_path()
@@ -1346,8 +2251,49 @@ class FilesPage(QWidget):
                 pass
 
     # ========================================================
+    # Shutdown
+    # ========================================================
+
+    def shutdown_workers(self):
+        for thread in (
+            self.scan_thread,
+            self.cleanup_thread,
+        ):
+            if (
+                thread is not None
+                and thread.isRunning()
+            ):
+                thread.requestInterruption()
+                thread.quit()
+                thread.wait(
+                    1500
+                )
+
+    # ========================================================
     # Formatting
     # ========================================================
+
+    @staticmethod
+    def format_timestamp(
+        timestamp,
+    ):
+        try:
+            return (
+                datetime.datetime
+                .fromtimestamp(
+                    timestamp
+                )
+                .strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+            )
+
+        except (
+            OSError,
+            OverflowError,
+            ValueError,
+        ):
+            return "Unknown"
 
     @staticmethod
     def format_size(
