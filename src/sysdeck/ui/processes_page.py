@@ -23,6 +23,10 @@ from PySide6.QtWidgets import (
 )
 
 
+# ============================================================
+# Process table model
+# ============================================================
+
 class ProcessTableModel(QAbstractTableModel):
     HEADERS = [
         "Name",
@@ -31,21 +35,45 @@ class ProcessTableModel(QAbstractTableModel):
         "Memory",
     ]
 
-    def __init__(self):
-        super().__init__()
+    def __init__(
+        self,
+        parent=None,
+    ):
+        super().__init__(
+            parent
+        )
+
         self.rows = []
+
+    # ========================================================
+    # Model dimensions
+    # ========================================================
 
     def rowCount(
         self,
         parent=QModelIndex(),
     ):
-        return len(self.rows)
+        if parent.isValid():
+            return 0
+
+        return len(
+            self.rows
+        )
 
     def columnCount(
         self,
         parent=QModelIndex(),
     ):
-        return 4
+        if parent.isValid():
+            return 0
+
+        return len(
+            self.HEADERS
+        )
+
+    # ========================================================
+    # Cell data
+    # ========================================================
 
     def data(
         self,
@@ -55,38 +83,63 @@ class ProcessTableModel(QAbstractTableModel):
         if not index.isValid():
             return None
 
-        name, pid, cpu, memory = (
-            self.rows[index.row()]
-        )
+        row_index = index.row()
 
-        column = index.column()
+        if not (
+            0
+            <= row_index
+            < len(self.rows)
+        ):
+            return None
 
-        raw_values = [
+        (
             name,
             pid,
             cpu,
             memory,
+        ) = self.rows[
+            row_index
         ]
 
+        column = index.column()
+
+        # Raw values are used by the proxy for
+        # correct numeric sorting.
         if role == Qt.ItemDataRole.UserRole:
-            return raw_values[column]
+            raw_values = (
+                name,
+                pid,
+                cpu,
+                memory,
+            )
+
+            return raw_values[
+                column
+            ]
 
         if role == Qt.ItemDataRole.DisplayRole:
             if column == 0:
                 return name
 
             if column == 1:
-                return str(pid)
+                return str(
+                    pid
+                )
 
             if column == 2:
-                return f"{cpu:.1f}%"
+                return (
+                    f"{cpu:.1f}%"
+                )
 
             if column == 3:
                 return self.format_memory(
                     memory
                 )
 
-        if role == Qt.ItemDataRole.TextAlignmentRole:
+        if (
+            role
+            == Qt.ItemDataRole.TextAlignmentRole
+        ):
             if column == 0:
                 return int(
                     Qt.AlignmentFlag.AlignLeft
@@ -100,6 +153,10 @@ class ProcessTableModel(QAbstractTableModel):
 
         return None
 
+    # ========================================================
+    # Headers
+    # ========================================================
+
     def headerData(
         self,
         section,
@@ -111,110 +168,256 @@ class ProcessTableModel(QAbstractTableModel):
             == Qt.Orientation.Horizontal
             and role
             == Qt.ItemDataRole.DisplayRole
+            and 0
+            <= section
+            < len(self.HEADERS)
         ):
-            return self.HEADERS[section]
+            return self.HEADERS[
+                section
+            ]
 
         return None
 
-    def update_rows(self, rows):
+    # ========================================================
+    # Updates
+    # ========================================================
+
+    def update_rows(
+        self,
+        rows,
+    ):
+        """
+        Avoid resetting the entire model when the process
+        list itself has not changed.
+
+        If the same PIDs are still present, only notify Qt
+        that their values changed. A full reset is reserved
+        for process creation/termination.
+        """
+
+        if rows == self.rows:
+            return
+
+        old_pids = tuple(
+            row[1]
+            for row
+            in self.rows
+        )
+
+        new_pids = tuple(
+            row[1]
+            for row
+            in rows
+        )
+
+        if (
+            self.rows
+            and len(self.rows)
+            == len(rows)
+            and old_pids
+            == new_pids
+        ):
+            self.rows = rows
+
+            top_left = self.index(
+                0,
+                0,
+            )
+
+            bottom_right = self.index(
+                len(rows) - 1,
+                len(self.HEADERS) - 1,
+            )
+
+            self.dataChanged.emit(
+                top_left,
+                bottom_right,
+                [
+                    Qt.ItemDataRole.DisplayRole,
+                    Qt.ItemDataRole.UserRole,
+                ],
+            )
+
+            return
+
         self.beginResetModel()
+
         self.rows = rows
+
         self.endResetModel()
 
+    # ========================================================
+    # Formatting
+    # ========================================================
+
     @staticmethod
-    def format_memory(memory_mb):
+    def format_memory(
+        memory_mb,
+    ):
         if memory_mb >= 1024:
-            return f"{memory_mb / 1024:.1f} GB"
+            return (
+                f"{memory_mb / 1024:.1f} GB"
+            )
 
-        return f"{memory_mb:.1f} MB"
+        return (
+            f"{memory_mb:.1f} MB"
+        )
 
+
+# ============================================================
+# Background process worker
+# ============================================================
 
 class ProcessWorker(QObject):
     data_ready = Signal(list)
+    failed = Signal(str)
 
-    def __init__(self):
+    def __init__(
+        self,
+    ):
         super().__init__()
 
         self.logical_cpu_count = (
-            psutil.cpu_count(logical=True) or 1
+            psutil.cpu_count(
+                logical=True
+            )
+            or 1
         )
 
     @Slot()
-    def refresh(self):
+    def refresh(
+        self,
+    ):
         processes = []
 
-        for process in psutil.process_iter(
-            [
-                "pid",
-                "name",
-                "memory_info",
-            ]
-        ):
-            try:
-                pid = process.info["pid"]
+        try:
+            # process_iter() reuses Process objects internally,
+            # which is useful because cpu_percent(interval=None)
+            # needs previous samples to calculate CPU usage.
+            for process in psutil.process_iter():
+                if (
+                    QThread.currentThread()
+                    .isInterruptionRequested()
+                ):
+                    return
 
-                # PID 0 = System Idle Process.
-                if pid == 0:
-                    continue
+                try:
+                    pid = process.pid
 
-                name = (
-                    process.info["name"]
-                    or "Unknown"
-                )
+                    # Windows PID 0 is System Idle Process.
+                    # It is not useful in this view and can
+                    # produce confusing CPU readings.
+                    if pid == 0:
+                        continue
 
-                raw_cpu = process.cpu_percent(
-                    interval=None
-                )
+                    # oneshot() allows psutil to reuse certain
+                    # underlying process queries during this
+                    # block instead of repeatedly asking Windows.
+                    with process.oneshot():
+                        name = (
+                            process.name()
+                            or "Unknown"
+                        )
 
-                cpu = (
-                    raw_cpu
-                    / self.logical_cpu_count
-                )
+                        memory_info = (
+                            process.memory_info()
+                        )
 
-                cpu = min(
-                    max(cpu, 0.0),
-                    100.0,
-                )
+                        raw_cpu = (
+                            process.cpu_percent(
+                                interval=None
+                            )
+                        )
 
-                memory_info = (
-                    process.info["memory_info"]
-                )
+                    if memory_info is None:
+                        continue
 
-                if memory_info is None:
-                    continue
-
-                memory_mb = (
-                    memory_info.rss
-                    / (1024 ** 2)
-                )
-
-                processes.append(
-                    (
-                        name,
-                        pid,
-                        cpu,
-                        memory_mb,
+                    # psutil Process.cpu_percent() can report
+                    # above 100% on multicore systems.
+                    #
+                    # Divide by logical CPU count to match the
+                    # 0–100% style used by Windows Task Manager.
+                    cpu = (
+                        raw_cpu
+                        / self.logical_cpu_count
                     )
-                )
 
-            except (
-                psutil.NoSuchProcess,
-                psutil.AccessDenied,
-                psutil.ZombieProcess,
-                KeyError,
-                AttributeError,
-            ):
-                continue
+                    cpu = min(
+                        max(
+                            cpu,
+                            0.0,
+                        ),
+                        100.0,
+                    )
 
-        self.data_ready.emit(
-            processes
-        )
+                    memory_mb = (
+                        memory_info.rss
+                        / (1024 ** 2)
+                    )
 
+                    # The UI only displays one decimal place.
+                    # Keeping the worker data at that precision
+                    # avoids meaningless tiny float differences.
+                    cpu = round(
+                        cpu,
+                        1,
+                    )
+
+                    memory_mb = round(
+                        memory_mb,
+                        1,
+                    )
+
+                    processes.append(
+                        (
+                            name,
+                            pid,
+                            cpu,
+                            memory_mb,
+                        )
+                    )
+
+                except (
+                    psutil.NoSuchProcess,
+                    psutil.AccessDenied,
+                    psutil.ZombieProcess,
+                    PermissionError,
+                    ProcessLookupError,
+                ):
+                    continue
+
+            # Keep source ordering stable.
+            #
+            # The proxy handles the user's visible sorting,
+            # while PID ordering lets the model detect whether
+            # processes were actually added or removed.
+            processes.sort(
+                key=lambda row:
+                    row[1]
+            )
+
+            self.data_ready.emit(
+                processes
+            )
+
+        except Exception as error:
+            self.failed.emit(
+                str(error)
+            )
+
+
+# ============================================================
+# Processes page
+# ============================================================
 
 class ProcessesPage(QWidget):
     refresh_requested = Signal()
 
-    def __init__(self):
+    REFRESH_INTERVAL_MS = 4000
+
+    def __init__(
+        self,
+    ):
         super().__init__()
 
         self.refresh_in_progress = False
@@ -223,8 +426,16 @@ class ProcessesPage(QWidget):
         self.setup_worker()
         self.setup_timer()
 
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
+    # ========================================================
+    # UI
+    # ========================================================
+
+    def setup_ui(
+        self,
+    ):
+        layout = QVBoxLayout(
+            self
+        )
 
         layout.setContentsMargins(
             46,
@@ -233,10 +444,21 @@ class ProcessesPage(QWidget):
             40,
         )
 
-        layout.setSpacing(18)
+        layout.setSpacing(
+            18
+        )
 
-        title = QLabel("Processes")
-        title.setObjectName("pageTitle")
+        # ----------------------------------------------------
+        # Header
+        # ----------------------------------------------------
+
+        title = QLabel(
+            "Processes"
+        )
+
+        title.setObjectName(
+            "pageTitle"
+        )
 
         description = QLabel(
             "View and inspect running applications and background processes."
@@ -245,6 +467,10 @@ class ProcessesPage(QWidget):
         description.setObjectName(
             "pageDescription"
         )
+
+        # ----------------------------------------------------
+        # Search
+        # ----------------------------------------------------
 
         self.search = QLineEdit()
 
@@ -260,6 +486,10 @@ class ProcessesPage(QWidget):
             True
         )
 
+        # ----------------------------------------------------
+        # Status
+        # ----------------------------------------------------
+
         self.status = QLabel(
             "Waiting for process data..."
         )
@@ -268,7 +498,13 @@ class ProcessesPage(QWidget):
             "processStatus"
         )
 
-        self.model = ProcessTableModel()
+        # ----------------------------------------------------
+        # Model + proxy
+        # ----------------------------------------------------
+
+        self.model = ProcessTableModel(
+            self
+        )
 
         self.proxy = QSortFilterProxyModel(
             self
@@ -282,20 +518,32 @@ class ProcessesPage(QWidget):
             Qt.CaseSensitivity.CaseInsensitive
         )
 
-        # Search all columns.
+        # Search every column.
         self.proxy.setFilterKeyColumn(
             -1
         )
 
-        # Sort using raw numeric values instead of
-        # strings like "10%" and "9%".
+        # Sort using the raw numeric values rather
+        # than strings such as "10.0%" or "1.2 GB".
         self.proxy.setSortRole(
             Qt.ItemDataRole.UserRole
+        )
+
+        self.proxy.setDynamicSortFilter(
+            True
         )
 
         self.search.textChanged.connect(
             self.proxy.setFilterFixedString
         )
+
+        self.search.textChanged.connect(
+            self.update_status
+        )
+
+        # ----------------------------------------------------
+        # Table
+        # ----------------------------------------------------
 
         self.table = QTableView()
 
@@ -336,14 +584,44 @@ class ProcessesPage(QWidget):
             False
         )
 
-        self.table.verticalHeader().hide()
+        self.table.setWordWrap(
+            False
+        )
 
-        self.table.verticalHeader().setDefaultSectionSize(
+        # ----------------------------------------------------
+        # Vertical rows
+        # ----------------------------------------------------
+
+        vertical_header = (
+            self.table
+            .verticalHeader()
+        )
+
+        vertical_header.hide()
+
+        vertical_header.setSectionResizeMode(
+            QHeaderView.ResizeMode.Fixed
+        )
+
+        vertical_header.setDefaultSectionSize(
             34
         )
 
+        # ----------------------------------------------------
+        # Column sizing
+        #
+        # ResizeToContents can repeatedly inspect rows whenever
+        # process data changes. Fixed widths are much cheaper
+        # for columns with predictable content.
+        # ----------------------------------------------------
+
         header = (
-            self.table.horizontalHeader()
+            self.table
+            .horizontalHeader()
+        )
+
+        header.setStretchLastSection(
+            False
         )
 
         header.setSectionResizeMode(
@@ -353,27 +631,70 @@ class ProcessesPage(QWidget):
 
         header.setSectionResizeMode(
             1,
-            QHeaderView.ResizeMode.ResizeToContents,
+            QHeaderView.ResizeMode.Fixed,
         )
 
         header.setSectionResizeMode(
             2,
-            QHeaderView.ResizeMode.ResizeToContents,
+            QHeaderView.ResizeMode.Fixed,
         )
 
         header.setSectionResizeMode(
             3,
-            QHeaderView.ResizeMode.ResizeToContents,
+            QHeaderView.ResizeMode.Fixed,
         )
 
-        layout.addWidget(title)
-        layout.addWidget(description)
-        layout.addSpacing(4)
-        layout.addWidget(self.search)
-        layout.addWidget(self.status)
-        layout.addWidget(self.table, 1)
+        self.table.setColumnWidth(
+            1,
+            90,
+        )
 
-    def setup_worker(self):
+        self.table.setColumnWidth(
+            2,
+            95,
+        )
+
+        self.table.setColumnWidth(
+            3,
+            120,
+        )
+
+        # ----------------------------------------------------
+        # Layout
+        # ----------------------------------------------------
+
+        layout.addWidget(
+            title
+        )
+
+        layout.addWidget(
+            description
+        )
+
+        layout.addSpacing(
+            4
+        )
+
+        layout.addWidget(
+            self.search
+        )
+
+        layout.addWidget(
+            self.status
+        )
+
+        layout.addWidget(
+            self.table,
+            1,
+        )
+
+    # ========================================================
+    # Worker
+    # ========================================================
+
+    def setup_worker(
+        self,
+    ):
         self.worker_thread = QThread(
             self
         )
@@ -392,6 +713,10 @@ class ProcessesPage(QWidget):
             self.receive_processes
         )
 
+        self.worker.failed.connect(
+            self.handle_refresh_failed
+        )
+
         self.worker_thread.start()
 
         app = QApplication.instance()
@@ -401,43 +726,80 @@ class ProcessesPage(QWidget):
                 self.shutdown_worker
             )
 
-    def setup_timer(self):
+    # ========================================================
+    # Timer
+    # ========================================================
+
+    def setup_timer(
+        self,
+    ):
         self.timer = QTimer(
             self
         )
 
         self.timer.setInterval(
-            4000
+            self.REFRESH_INTERVAL_MS
         )
 
         self.timer.timeout.connect(
             self.request_refresh
         )
 
-    def showEvent(self, event):
-        super().showEvent(event)
+    # ========================================================
+    # Visibility
+    # ========================================================
+
+    def showEvent(
+        self,
+        event,
+    ):
+        super().showEvent(
+            event
+        )
 
         if not self.timer.isActive():
             self.timer.start()
 
+        # Refresh immediately whenever the page becomes visible
+        # instead of waiting up to four seconds.
         QTimer.singleShot(
             0,
             self.request_refresh,
         )
 
-    def hideEvent(self, event):
+    def hideEvent(
+        self,
+        event,
+    ):
+        # No process polling while the user is elsewhere
+        # in SysDeck.
         self.timer.stop()
-        super().hideEvent(event)
 
-    def request_refresh(self):
+        super().hideEvent(
+            event
+        )
+
+    # ========================================================
+    # Refresh cycle
+    # ========================================================
+
+    def request_refresh(
+        self,
+    ):
         if self.refresh_in_progress:
+            return
+
+        if not self.worker_thread.isRunning():
             return
 
         self.refresh_in_progress = True
 
-        self.status.setText(
-            "Refreshing processes..."
-        )
+        # Don't rewrite the status every four seconds once
+        # useful data is already visible.
+        if not self.model.rows:
+            self.status.setText(
+                "Loading processes..."
+            )
 
         self.refresh_requested.emit()
 
@@ -452,14 +814,71 @@ class ProcessesPage(QWidget):
 
         self.refresh_in_progress = False
 
+        self.update_status()
+
+    @Slot(str)
+    def handle_refresh_failed(
+        self,
+        error,
+    ):
+        self.refresh_in_progress = False
+
         self.status.setText(
-            f"{len(processes)} processes · "
-            "updates every 4 seconds"
+            "Process refresh failed · "
+            "will retry automatically"
         )
 
-    def shutdown_worker(self):
+    # ========================================================
+    # Status
+    # ========================================================
+
+    def update_status(
+        self,
+        *_args,
+    ):
+        total_count = (
+            self.model.rowCount()
+        )
+
+        visible_count = (
+            self.proxy.rowCount()
+        )
+
+        query = (
+            self.search.text().strip()
+        )
+
+        if query:
+            self.status.setText(
+                f"{visible_count:,} matching · "
+                f"{total_count:,} processes · "
+                "updates every 4 seconds"
+            )
+
+        else:
+            self.status.setText(
+                f"{total_count:,} processes · "
+                "updates every 4 seconds"
+            )
+
+    # ========================================================
+    # Shutdown
+    # ========================================================
+
+    def shutdown_worker(
+        self,
+    ):
         self.timer.stop()
 
+        self.refresh_requested.disconnect(
+            self.worker.refresh
+        )
+
         if self.worker_thread.isRunning():
+            self.worker_thread.requestInterruption()
+
             self.worker_thread.quit()
-            self.worker_thread.wait(1500)
+
+            self.worker_thread.wait(
+                2000
+            )
