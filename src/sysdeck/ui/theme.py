@@ -421,4 +421,29 @@ QTabWidget#filesTabs QTabBar::tab:selected {
     color: #f2f2f2;
     border-bottom: 2px solid #bdbdbd;
 }
+QTableView#searchResults {
+    background-color: #1b1b1b;
+    alternate-background-color: #1e1e1e;
+
+    color: #dedede;
+
+    border: 1px solid #292929;
+    border-radius: 9px;
+
+    outline: none;
+
+    selection-background-color: #303030;
+    selection-color: #ffffff;
+}
+
+QTableView#searchResults::item {
+    padding-left: 8px;
+    padding-right: 8px;
+    border: none;
+}
+
+QTableView#searchResults::item:selected {
+    background-color: #303030;
+    color: #ffffff;
+}
 """

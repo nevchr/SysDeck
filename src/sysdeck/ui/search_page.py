@@ -4,8 +4,11 @@ import subprocess
 import time
 
 from PySide6.QtCore import (
+    QAbstractTableModel,
     QObject,
+    QRunnable,
     QThread,
+    QThreadPool,
     Qt,
     QTimer,
     Signal,
@@ -21,8 +24,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
+    QTableView,
     QVBoxLayout,
     QWidget,
 )
@@ -42,7 +44,10 @@ class FileIndexWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, root_folder):
+    def __init__(
+        self,
+        root_folder,
+    ):
         super().__init__()
 
         self.root_folder = os.path.abspath(
@@ -56,8 +61,6 @@ class FileIndexWorker(QObject):
         try:
             connection = connect_database()
 
-            # Re-indexing the same location replaces
-            # its old records instead of duplicating them.
             connection.execute(
                 """
                 DELETE FROM files
@@ -77,11 +80,18 @@ class FileIndexWorker(QObject):
                 time.monotonic()
             )
 
-            def handle_walk_error(_error):
+            def handle_walk_error(
+                _error,
+            ):
                 nonlocal skipped_count
+
                 skipped_count += 1
 
-            for current_root, directories, files in os.walk(
+            for (
+                current_root,
+                directories,
+                files,
+            ) in os.walk(
                 self.root_folder,
                 topdown=True,
                 onerror=handle_walk_error,
@@ -129,10 +139,14 @@ class FileIndexWorker(QObject):
                     )
 
                     try:
-                        if os.path.islink(path):
+                        if os.path.islink(
+                            path
+                        ):
                             continue
 
-                        stat = os.stat(path)
+                        stat = os.stat(
+                            path
+                        )
 
                     except (
                         PermissionError,
@@ -185,7 +199,9 @@ class FileIndexWorker(QObject):
                             }
                         )
 
-                        last_progress_time = now
+                        last_progress_time = (
+                            now
+                        )
 
             if batch:
                 self.write_batch(
@@ -250,6 +266,523 @@ class FileIndexWorker(QObject):
 
 
 # ============================================================
+# Search result model
+# ============================================================
+
+class SearchResultsModel(
+    QAbstractTableModel
+):
+    HEADERS = [
+        "Name",
+        "Folder",
+        "Type",
+        "Size",
+        "Modified",
+    ]
+
+    def __init__(
+        self,
+        parent=None,
+    ):
+        super().__init__(
+            parent
+        )
+
+        self.rows = []
+
+    def rowCount(
+        self,
+        parent=None,
+    ):
+        return len(
+            self.rows
+        )
+
+    def columnCount(
+        self,
+        parent=None,
+    ):
+        return len(
+            self.HEADERS
+        )
+
+    def headerData(
+        self,
+        section,
+        orientation,
+        role=Qt.ItemDataRole.DisplayRole,
+    ):
+        if (
+            role
+            != Qt.ItemDataRole.DisplayRole
+        ):
+            return None
+
+        if (
+            orientation
+            == Qt.Orientation.Horizontal
+            and 0
+            <= section
+            < len(self.HEADERS)
+        ):
+            return self.HEADERS[
+                section
+            ]
+
+        return None
+
+    def data(
+        self,
+        index,
+        role=Qt.ItemDataRole.DisplayRole,
+    ):
+        if (
+            not index.isValid()
+            or not (
+                0
+                <= index.row()
+                < len(self.rows)
+            )
+        ):
+            return None
+
+        row = self.rows[
+            index.row()
+        ]
+
+        column = index.column()
+
+        if role == Qt.ItemDataRole.DisplayRole:
+            if column == 0:
+                return row["name"]
+
+            if column == 1:
+                return row["parent"]
+
+            if column == 2:
+                return row["type"]
+
+            if column == 3:
+                return self.format_size(
+                    row["size"]
+                )
+
+            if column == 4:
+                return (
+                    datetime.datetime
+                    .fromtimestamp(
+                        row["modified"]
+                    )
+                    .strftime(
+                        "%Y-%m-%d %H:%M"
+                    )
+                )
+
+        if role == Qt.ItemDataRole.ToolTipRole:
+            if column in (
+                0,
+                1,
+            ):
+                return row["path"]
+
+        if role == Qt.ItemDataRole.UserRole:
+            return row["path"]
+
+        if (
+            role
+            == Qt.ItemDataRole.TextAlignmentRole
+            and column == 3
+        ):
+            return int(
+                Qt.AlignmentFlag.AlignRight
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+
+        return None
+
+    def set_rows(
+        self,
+        rows,
+    ):
+        self.beginResetModel()
+
+        self.rows = rows
+
+        self.endResetModel()
+
+    def clear(
+        self,
+    ):
+        self.set_rows(
+            []
+        )
+
+    def get_path(
+        self,
+        row,
+    ):
+        if not (
+            0
+            <= row
+            < len(self.rows)
+        ):
+            return None
+
+        return self.rows[
+            row
+        ]["path"]
+
+    @staticmethod
+    def format_size(
+        size,
+    ):
+        if size >= 1024 ** 4:
+            return (
+                f"{size / (1024 ** 4):.2f} TB"
+            )
+
+        if size >= 1024 ** 3:
+            return (
+                f"{size / (1024 ** 3):.1f} GB"
+            )
+
+        if size >= 1024 ** 2:
+            return (
+                f"{size / (1024 ** 2):.1f} MB"
+            )
+
+        if size >= 1024:
+            return (
+                f"{size / 1024:.1f} KB"
+            )
+
+        return f"{size} B"
+
+
+# ============================================================
+# Background search task
+# ============================================================
+
+class SearchTaskSignals(QObject):
+    finished = Signal(object)
+    failed = Signal(object)
+
+
+class SearchTask(QRunnable):
+    def __init__(
+        self,
+        request_id,
+        request,
+    ):
+        super().__init__()
+
+        self.request_id = (
+            request_id
+        )
+
+        self.request = (
+            request
+        )
+
+        self.signals = (
+            SearchTaskSignals()
+        )
+
+    @Slot()
+    def run(self):
+        connection = None
+
+        try:
+            connection = connect_database()
+
+            result = self.execute_search(
+                connection,
+                self.request,
+            )
+
+            result[
+                "request_id"
+            ] = self.request_id
+
+            self.signals.finished.emit(
+                result
+            )
+
+        except Exception as error:
+            self.signals.failed.emit(
+                {
+                    "request_id":
+                        self.request_id,
+
+                    "error":
+                        str(error),
+                }
+            )
+
+        finally:
+            if connection is not None:
+                connection.close()
+
+    @staticmethod
+    def execute_search(
+        connection,
+        request,
+    ):
+        query = request[
+            "query"
+        ]
+
+        root = request[
+            "root"
+        ]
+
+        extension = request[
+            "extension"
+        ]
+
+        minimum_size = request[
+            "minimum_size"
+        ]
+
+        modified_age = request[
+            "modified_age"
+        ]
+
+        sort_mode = request[
+            "sort_mode"
+        ]
+
+        where_clauses = []
+        parameters = []
+
+        # ----------------------------------------------------
+        # Multi-word search
+        # ----------------------------------------------------
+
+        terms = [
+            term
+            for term
+            in query.split()
+            if term
+        ]
+
+        for term in terms:
+            wildcard = (
+                f"%{term}%"
+            )
+
+            where_clauses.append(
+                """
+                (
+                    name LIKE ? COLLATE NOCASE
+                    OR
+                    path LIKE ? COLLATE NOCASE
+                )
+                """
+            )
+
+            parameters.extend(
+                [
+                    wildcard,
+                    wildcard,
+                ]
+            )
+
+        # ----------------------------------------------------
+        # Filters
+        # ----------------------------------------------------
+
+        if root:
+            where_clauses.append(
+                "root_path = ?"
+            )
+
+            parameters.append(
+                root
+            )
+
+        if extension:
+            where_clauses.append(
+                "extension = ? COLLATE NOCASE"
+            )
+
+            parameters.append(
+                extension
+            )
+
+        if minimum_size > 0:
+            where_clauses.append(
+                "size >= ?"
+            )
+
+            parameters.append(
+                minimum_size
+            )
+
+        if modified_age is not None:
+            cutoff = (
+                time.time()
+                - modified_age
+            )
+
+            where_clauses.append(
+                "modified >= ?"
+            )
+
+            parameters.append(
+                cutoff
+            )
+
+        where_sql = ""
+
+        if where_clauses:
+            where_sql = (
+                "WHERE "
+                + " AND ".join(
+                    where_clauses
+                )
+            )
+
+        # ----------------------------------------------------
+        # Sorting
+        # ----------------------------------------------------
+
+        order_parameters = []
+
+        if (
+            sort_mode == "relevance"
+            and terms
+        ):
+            first_term = terms[
+                0
+            ]
+
+            order_sql = """
+                CASE
+                    WHEN name = ? COLLATE NOCASE
+                        THEN 0
+
+                    WHEN name LIKE ? COLLATE NOCASE
+                        THEN 1
+
+                    ELSE 2
+                END,
+                name COLLATE NOCASE ASC
+            """
+
+            order_parameters = [
+                first_term,
+                f"{first_term}%",
+            ]
+
+        elif sort_mode == "name":
+            order_sql = (
+                "name COLLATE NOCASE ASC"
+            )
+
+        elif sort_mode == "size":
+            order_sql = (
+                "size DESC"
+            )
+
+        elif sort_mode == "modified":
+            order_sql = (
+                "modified DESC"
+            )
+
+        else:
+            # Blank search + relevance selected.
+            order_sql = (
+                "modified DESC"
+            )
+
+        # ----------------------------------------------------
+        # Count
+        # ----------------------------------------------------
+
+        total_results = connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM files
+            {where_sql}
+            """,
+            parameters,
+        ).fetchone()[0]
+
+        # ----------------------------------------------------
+        # Visible results
+        # ----------------------------------------------------
+
+        rows = connection.execute(
+            f"""
+            SELECT
+                name,
+                parent,
+                extension,
+                size,
+                modified,
+                path
+            FROM files
+            {where_sql}
+            ORDER BY
+                {order_sql}
+            LIMIT 500
+            """,
+            (
+                parameters
+                + order_parameters
+            ),
+        ).fetchall()
+
+        formatted_rows = []
+
+        for (
+            name,
+            parent,
+            extension,
+            size,
+            modified,
+            path,
+        ) in rows:
+            formatted_rows.append(
+                {
+                    "name":
+                        name,
+
+                    "parent":
+                        parent,
+
+                    "extension":
+                        extension,
+
+                    "type":
+                        (
+                            extension[1:].upper()
+                            if extension
+                            else "FILE"
+                        ),
+
+                    "size":
+                        size,
+
+                    "modified":
+                        modified,
+
+                    "path":
+                        path,
+                }
+            )
+
+        return {
+            "rows":
+                formatted_rows,
+
+            "total_results":
+                total_results,
+        }
+
+
+# ============================================================
 # Search page
 # ============================================================
 
@@ -257,21 +790,45 @@ class SearchPage(QWidget):
     def __init__(self):
         super().__init__()
 
+        # ----------------------------------------------------
+        # Index worker
+        # ----------------------------------------------------
+
         self.index_thread = None
         self.index_worker = None
+
+        # ----------------------------------------------------
+        # Search worker pool
+        #
+        # Only one SQL query runs at once.
+        #
+        # When another search is requested, any queued stale
+        # searches are discarded and only the newest remains.
+        # ----------------------------------------------------
+
+        self.search_pool = QThreadPool(
+            self
+        )
+
+        self.search_pool.setMaxThreadCount(
+            1
+        )
+
+        self.latest_search_id = 0
 
         self.setup_ui()
         self.setup_search_timer()
 
         self.refresh_filter_options()
         self.refresh_index_status()
+
         self.perform_search()
 
         app = QApplication.instance()
 
         if app is not None:
             app.aboutToQuit.connect(
-                self.shutdown_indexer
+                self.shutdown_workers
             )
 
     # ========================================================
@@ -279,7 +836,9 @@ class SearchPage(QWidget):
     # ========================================================
 
     def setup_ui(self):
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(
+            self
+        )
 
         layout.setContentsMargins(
             46,
@@ -288,7 +847,9 @@ class SearchPage(QWidget):
             40,
         )
 
-        layout.setSpacing(16)
+        layout.setSpacing(
+            16
+        )
 
         # ----------------------------------------------------
         # Header
@@ -297,7 +858,10 @@ class SearchPage(QWidget):
         header = QHBoxLayout()
 
         header_text = QVBoxLayout()
-        header_text.setSpacing(6)
+
+        header_text.setSpacing(
+            6
+        )
 
         title = QLabel(
             "Search"
@@ -350,7 +914,7 @@ class SearchPage(QWidget):
         )
 
         # ----------------------------------------------------
-        # Index information
+        # Index status
         # ----------------------------------------------------
 
         self.index_status = QLabel(
@@ -366,7 +930,7 @@ class SearchPage(QWidget):
         )
 
         # ----------------------------------------------------
-        # Main search box
+        # Search input
         # ----------------------------------------------------
 
         self.search_input = QLineEdit()
@@ -396,7 +960,10 @@ class SearchPage(QWidget):
         # ----------------------------------------------------
 
         filter_row = QHBoxLayout()
-        filter_row.setSpacing(10)
+
+        filter_row.setSpacing(
+            10
+        )
 
         self.root_filter = QComboBox()
 
@@ -569,7 +1136,7 @@ class SearchPage(QWidget):
         )
 
         # ----------------------------------------------------
-        # Result actions
+        # Result controls
         # ----------------------------------------------------
 
         results_header = QHBoxLayout()
@@ -653,26 +1220,25 @@ class SearchPage(QWidget):
         )
 
         # ----------------------------------------------------
-        # Results table
+        # Results model + view
         # ----------------------------------------------------
 
-        self.results_table = QTableWidget(
-            0,
-            5,
+        self.results_model = (
+            SearchResultsModel(
+                self
+            )
+        )
+
+        self.results_table = (
+            QTableView()
         )
 
         self.results_table.setObjectName(
             "searchResults"
         )
 
-        self.results_table.setHorizontalHeaderLabels(
-            [
-                "Name",
-                "Folder",
-                "Type",
-                "Size",
-                "Modified",
-            ]
+        self.results_table.setModel(
+            self.results_model
         )
 
         self.results_table.verticalHeader().hide()
@@ -697,18 +1263,22 @@ class SearchPage(QWidget):
             False
         )
 
-        self.results_table.itemSelectionChanged.connect(
+        self.results_table.selectionModel().selectionChanged.connect(
             self.update_action_buttons
         )
 
-        self.results_table.itemDoubleClicked.connect(
-            lambda _item:
+        self.results_table.doubleClicked.connect(
+            lambda _index:
             self.open_selected()
         )
 
         header_view = (
             self.results_table
             .horizontalHeader()
+        )
+
+        header_view.setStretchLastSection(
+            False
         )
 
         header_view.setSectionResizeMode(
@@ -741,6 +1311,10 @@ class SearchPage(QWidget):
             1,
         )
 
+    # ========================================================
+    # Search debounce
+    # ========================================================
+
     def setup_search_timer(self):
         self.search_timer = QTimer(
             self
@@ -750,13 +1324,21 @@ class SearchPage(QWidget):
             True
         )
 
+        # Slightly longer than v0.2 to avoid starting
+        # unnecessary searches while typing quickly.
         self.search_timer.setInterval(
-            180
+            275
         )
 
         self.search_timer.timeout.connect(
             self.perform_search
         )
+
+    def queue_search(
+        self,
+        *_args,
+    ):
+        self.search_timer.start()
 
     # ========================================================
     # Indexing
@@ -888,19 +1470,6 @@ class SearchPage(QWidget):
         self.index_thread = None
         self.index_worker = None
 
-    def shutdown_indexer(self):
-        if (
-            self.index_thread is not None
-            and self.index_thread.isRunning()
-        ):
-            self.index_thread.requestInterruption()
-
-            self.index_thread.quit()
-
-            self.index_thread.wait(
-                1500
-            )
-
     # ========================================================
     # Filter data
     # ========================================================
@@ -999,7 +1568,10 @@ class SearchPage(QWidget):
         value,
     ):
         if value is None:
-            combo.setCurrentIndex(0)
+            combo.setCurrentIndex(
+                0
+            )
+
             return
 
         index = combo.findData(
@@ -1040,356 +1612,103 @@ class SearchPage(QWidget):
         self.queue_search()
 
     # ========================================================
-    # Searching
+    # Background searching
     # ========================================================
 
-    def queue_search(
-        self,
-        *_args,
-    ):
-        self.search_timer.start()
-
     def perform_search(self):
-        query = (
-            self.search_input
-            .text()
-            .strip()
+        request = {
+            "query":
+                self.search_input
+                .text()
+                .strip(),
+
+            "root":
+                self.root_filter
+                .currentData(),
+
+            "extension":
+                self.extension_filter
+                .currentData(),
+
+            "minimum_size":
+                (
+                    self.size_filter
+                    .currentData()
+                    or 0
+                ),
+
+            "modified_age":
+                self.modified_filter
+                .currentData(),
+
+            "sort_mode":
+                (
+                    self.sort_filter
+                    .currentData()
+                    or "relevance"
+                ),
+        }
+
+        self.latest_search_id += 1
+
+        request_id = (
+            self.latest_search_id
         )
 
-        root = (
-            self.root_filter
-            .currentData()
+        # Remove searches that haven't started yet.
+        #
+        # If one query is currently running, it is allowed
+        # to finish in the background. Its result will simply
+        # be ignored if a newer request exists.
+        self.search_pool.clear()
+
+        task = SearchTask(
+            request_id,
+            request,
         )
 
-        extension = (
-            self.extension_filter
-            .currentData()
+        task.signals.finished.connect(
+            self.handle_search_finished
         )
 
-        minimum_size = (
-            self.size_filter
-            .currentData()
-            or 0
+        task.signals.failed.connect(
+            self.handle_search_failed
         )
 
-        modified_age = (
-            self.modified_filter
-            .currentData()
+        self.results_status.setText(
+            "Searching..."
         )
 
-        sort_mode = (
-            self.sort_filter
-            .currentData()
-            or "relevance"
+        self.search_pool.start(
+            task
         )
 
-        where_clauses = []
-        parameters = []
+    @Slot(object)
+    def handle_search_finished(
+        self,
+        result,
+    ):
+        if (
+            result["request_id"]
+            != self.latest_search_id
+        ):
+            return
 
-        # ----------------------------------------------------
-        # Multi-word search
-        # ----------------------------------------------------
-
-        terms = [
-            term
-            for term
-            in query.split()
-            if term
+        rows = result[
+            "rows"
         ]
 
-        for term in terms:
-            wildcard = (
-                f"%{term}%"
-            )
+        total_results = result[
+            "total_results"
+        ]
 
-            where_clauses.append(
-                """
-                (
-                    name LIKE ? COLLATE NOCASE
-                    OR
-                    path LIKE ? COLLATE NOCASE
-                )
-                """
-            )
-
-            parameters.extend(
-                [
-                    wildcard,
-                    wildcard,
-                ]
-            )
-
-        # ----------------------------------------------------
-        # Filters
-        # ----------------------------------------------------
-
-        if root:
-            where_clauses.append(
-                "root_path = ?"
-            )
-
-            parameters.append(
-                root
-            )
-
-        if extension:
-            where_clauses.append(
-                "extension = ? COLLATE NOCASE"
-            )
-
-            parameters.append(
-                extension
-            )
-
-        if minimum_size > 0:
-            where_clauses.append(
-                "size >= ?"
-            )
-
-            parameters.append(
-                minimum_size
-            )
-
-        if modified_age is not None:
-            cutoff = (
-                time.time()
-                - modified_age
-            )
-
-            where_clauses.append(
-                "modified >= ?"
-            )
-
-            parameters.append(
-                cutoff
-            )
-
-        where_sql = ""
-
-        if where_clauses:
-            where_sql = (
-                "WHERE "
-                + " AND ".join(
-                    where_clauses
-                )
-            )
-
-        # ----------------------------------------------------
-        # Sort order
-        # ----------------------------------------------------
-
-        if (
-            sort_mode == "relevance"
-            and query
-        ):
-            first_term = terms[0]
-
-            exact = first_term
-
-            prefix = (
-                f"{first_term}%"
-            )
-
-            relevance_sql = """
-                CASE
-                    WHEN name = ? COLLATE NOCASE
-                        THEN 0
-
-                    WHEN name LIKE ? COLLATE NOCASE
-                        THEN 1
-
-                    ELSE 2
-                END,
-                name COLLATE NOCASE
-            """
-
-            select_parameters = (
-                parameters
-                + [
-                    exact,
-                    prefix,
-                ]
-            )
-
-        elif sort_mode == "name":
-            relevance_sql = (
-                "name COLLATE NOCASE ASC"
-            )
-
-            select_parameters = (
-                parameters
-            )
-
-        elif sort_mode == "size":
-            relevance_sql = (
-                "size DESC"
-            )
-
-            select_parameters = (
-                parameters
-            )
-
-        else:
-            relevance_sql = (
-                "modified DESC"
-            )
-
-            select_parameters = (
-                parameters
-            )
-
-        connection = connect_database()
-
-        try:
-            total_results = connection.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM files
-                {where_sql}
-                """,
-                parameters,
-            ).fetchone()[0]
-
-            rows = connection.execute(
-                f"""
-                SELECT
-                    name,
-                    parent,
-                    extension,
-                    size,
-                    modified,
-                    path
-                FROM files
-                {where_sql}
-                ORDER BY
-                    {relevance_sql}
-                LIMIT 500
-                """,
-                select_parameters,
-            ).fetchall()
-
-        finally:
-            connection.close()
-
-        self.populate_results(
-            rows,
-            total_results,
+        self.results_model.set_rows(
+            rows
         )
 
-    def populate_results(
-        self,
-        rows,
-        total_results,
-    ):
-        self.results_table.setUpdatesEnabled(
-            False
-        )
-
-        self.results_table.setRowCount(
-            len(rows)
-        )
-
-        for row_index, row in enumerate(
+        if total_results > len(
             rows
         ):
-            (
-                name,
-                parent,
-                extension,
-                size,
-                modified,
-                path,
-            ) = row
-
-            name_item = QTableWidgetItem(
-                name
-            )
-
-            name_item.setData(
-                Qt.ItemDataRole.UserRole,
-                path,
-            )
-
-            folder_item = QTableWidgetItem(
-                parent
-            )
-
-            folder_item.setToolTip(
-                parent
-            )
-
-            file_type = (
-                extension[1:].upper()
-                if extension
-                else "FILE"
-            )
-
-            type_item = QTableWidgetItem(
-                file_type
-            )
-
-            size_item = QTableWidgetItem(
-                self.format_size(
-                    size
-                )
-            )
-
-            size_item.setTextAlignment(
-                Qt.AlignmentFlag.AlignRight
-                | Qt.AlignmentFlag.AlignVCenter
-            )
-
-            modified_text = (
-                datetime.datetime
-                .fromtimestamp(
-                    modified
-                )
-                .strftime(
-                    "%Y-%m-%d %H:%M"
-                )
-            )
-
-            modified_item = QTableWidgetItem(
-                modified_text
-            )
-
-            self.results_table.setItem(
-                row_index,
-                0,
-                name_item,
-            )
-
-            self.results_table.setItem(
-                row_index,
-                1,
-                folder_item,
-            )
-
-            self.results_table.setItem(
-                row_index,
-                2,
-                type_item,
-            )
-
-            self.results_table.setItem(
-                row_index,
-                3,
-                size_item,
-            )
-
-            self.results_table.setItem(
-                row_index,
-                4,
-                modified_item,
-            )
-
-        self.results_table.setUpdatesEnabled(
-            True
-        )
-
-        self.results_table.viewport().update()
-
-        if total_results > len(rows):
             self.results_status.setText(
                 f"Showing {len(rows):,} of "
                 f"{total_results:,} results"
@@ -1402,6 +1721,22 @@ class SearchPage(QWidget):
             )
 
         self.update_action_buttons()
+
+    @Slot(object)
+    def handle_search_failed(
+        self,
+        result,
+    ):
+        if (
+            result["request_id"]
+            != self.latest_search_id
+        ):
+            return
+
+        self.results_status.setText(
+            f"Search failed: "
+            f"{result['error']}"
+        )
 
     # ========================================================
     # Index information
@@ -1457,41 +1792,43 @@ class SearchPage(QWidget):
             self.index_status.setText(
                 f"{file_count:,} files indexed across "
                 f"{root_count:,} {location_word} · "
-                f"Index size {self.format_size(database_size)}"
+                f"Index size "
+                f"{self.format_size(database_size)}"
             )
 
     # ========================================================
-    # File actions
+    # Selected file
     # ========================================================
 
     def get_selected_path(self):
-        selected_rows = (
+        selection_model = (
             self.results_table
             .selectionModel()
+        )
+
+        if selection_model is None:
+            return None
+
+        selected_rows = (
+            selection_model
             .selectedRows()
         )
 
         if not selected_rows:
             return None
 
-        row = (
-            selected_rows[0]
-            .row()
+        row = selected_rows[
+            0
+        ].row()
+
+        return self.results_model.get_path(
+            row
         )
 
-        item = self.results_table.item(
-            row,
-            0,
-        )
-
-        if item is None:
-            return None
-
-        return item.data(
-            Qt.ItemDataRole.UserRole
-        )
-
-    def update_action_buttons(self):
+    def update_action_buttons(
+        self,
+        *_args,
+    ):
         has_selection = (
             self.get_selected_path()
             is not None
@@ -1509,17 +1846,17 @@ class SearchPage(QWidget):
             has_selection
         )
 
+    # ========================================================
+    # File actions
+    # ========================================================
+
     def copy_selected_path(self):
         path = self.get_selected_path()
 
         if not path:
             return
 
-        clipboard = (
-            QApplication.clipboard()
-        )
-
-        clipboard.setText(
+        QApplication.clipboard().setText(
             path
         )
 
@@ -1532,12 +1869,16 @@ class SearchPage(QWidget):
 
         if (
             not path
-            or not os.path.exists(path)
+            or not os.path.exists(
+                path
+            )
         ):
             return
 
         try:
-            os.startfile(path)
+            os.startfile(
+                path
+            )
 
         except OSError:
             pass
@@ -1548,7 +1889,9 @@ class SearchPage(QWidget):
         if not path:
             return
 
-        if not os.path.exists(path):
+        if not os.path.exists(
+            path
+        ):
             return
 
         try:
@@ -1572,6 +1915,33 @@ class SearchPage(QWidget):
 
             except OSError:
                 pass
+
+    # ========================================================
+    # Shutdown
+    # ========================================================
+
+    def shutdown_workers(self):
+        self.search_timer.stop()
+
+        # Discard any queued searches.
+        self.search_pool.clear()
+
+        if (
+            self.index_thread is not None
+            and self.index_thread.isRunning()
+        ):
+            self.index_thread.requestInterruption()
+
+            self.index_thread.quit()
+
+            self.index_thread.wait(
+                1500
+            )
+
+        # Give an active SQL query a moment to finish.
+        self.search_pool.waitForDone(
+            1000
+        )
 
     # ========================================================
     # Formatting
