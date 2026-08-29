@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 from .core.paths import resource_path
 from .ui.main_window import MainWindow
+from .version import APP_NAME, APP_VERSION
 
 
 def configure_windows_app_identity():
@@ -37,11 +38,15 @@ def main():
     )
 
     app.setApplicationName(
-        "SysDeck"
+        APP_NAME
+    )
+
+    app.setApplicationVersion(
+        APP_VERSION
     )
 
     app.setOrganizationName(
-        "SysDeck"
+        APP_NAME
     )
 
     icon_path = resource_path(

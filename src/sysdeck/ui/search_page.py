@@ -1494,28 +1494,29 @@ class SearchPage(QWidget):
                 conflict["type"]
                 == "covered_by"
             ):
-                message = (
-                    "This folder is already inside an "
-                    "indexed location:\n\n"
-                    f"{existing_root}\n\n"
-                    "Reindex the existing location instead, "
-                    "or remove it from the index first."
+                QMessageBox.information(
+                    self,
+                    "Already indexed",
+                    (
+                        "This folder is already covered by:\n\n"
+                        f"{existing_root}\n\n"
+                        "You don't need to index it separately. "
+                        "Reindex the existing location from Settings "
+                        "if you want to refresh it."
+                    ),
                 )
 
             else:
-                message = (
-                    "This folder contains an already "
-                    "indexed location:\n\n"
-                    f"{existing_root}\n\n"
-                    "Remove that indexed location first "
-                    "before indexing this broader folder."
+                QMessageBox.information(
+                    self,
+                    "Contains an indexed location",
+                    (
+                        "This folder contains an indexed location:\n\n"
+                        f"{existing_root}\n\n"
+                        "Remove that location from the index first, "
+                        "then index this broader folder."
+                    ),
                 )
-
-            QMessageBox.warning(
-                self,
-                "Indexed locations cannot overlap",
-                message,
-            )
 
             return
 

@@ -11,12 +11,14 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -186,7 +188,40 @@ class SettingsPage(QWidget):
     # ========================================================
 
     def setup_ui(self):
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(
+            self
+        )
+
+        outer_layout.setContentsMargins(
+            0,
+            0,
+            0,
+            0,
+        )
+
+        outer_layout.setSpacing(
+            0
+        )
+
+        self.scroll_area = QScrollArea()
+
+        self.scroll_area.setWidgetResizable(
+            True
+        )
+
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
+        self.scroll_area.setFrameShape(
+            QFrame.Shape.NoFrame
+        )
+
+        content = QWidget()
+
+        layout = QVBoxLayout(
+            content
+        )
 
         layout.setContentsMargins(
             46,
@@ -197,6 +232,14 @@ class SettingsPage(QWidget):
 
         layout.setSpacing(
             16
+        )
+
+        self.scroll_area.setWidget(
+            content
+        )
+
+        outer_layout.addWidget(
+            self.scroll_area
         )
 
         # ----------------------------------------------------
@@ -217,6 +260,10 @@ class SettingsPage(QWidget):
 
         description.setObjectName(
             "pageDescription"
+        )
+
+        description.setWordWrap(
+            True
         )
 
         layout.addWidget(
@@ -316,6 +363,10 @@ class SettingsPage(QWidget):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
+        self.database_path_label.setWordWrap(
+            True
+        )
+
         layout.addWidget(
             self.database_path_label
         )
@@ -400,18 +451,40 @@ class SettingsPage(QWidget):
         # Index action buttons
         # ----------------------------------------------------
 
-        index_actions = QHBoxLayout()
-
-        index_actions.setSpacing(
-            12
-        )
-
         self.index_status = QLabel(
             ""
         )
 
         self.index_status.setObjectName(
             "searchStatus"
+        )
+
+        self.index_status.setWordWrap(
+            True
+        )
+
+        layout.addWidget(
+            self.index_status
+        )
+
+        index_actions = QGridLayout()
+
+        index_actions.setHorizontalSpacing(
+            10
+        )
+
+        index_actions.setVerticalSpacing(
+            10
+        )
+
+        index_actions.setColumnStretch(
+            0,
+            1,
+        )
+
+        index_actions.setColumnStretch(
+            1,
+            1,
         )
 
         self.open_location_button = QPushButton(
@@ -475,25 +548,27 @@ class SettingsPage(QWidget):
         )
 
         index_actions.addWidget(
-            self.index_status
-        )
-
-        index_actions.addStretch()
-
-        index_actions.addWidget(
-            self.open_location_button
+            self.open_location_button,
+            0,
+            0,
         )
 
         index_actions.addWidget(
-            self.reindex_button
+            self.reindex_button,
+            0,
+            1,
         )
 
         index_actions.addWidget(
-            self.remove_button
+            self.remove_button,
+            1,
+            0,
         )
 
         index_actions.addWidget(
-            self.clear_index_button
+            self.clear_index_button,
+            1,
+            1,
         )
 
         layout.addLayout(
@@ -559,6 +634,10 @@ class SettingsPage(QWidget):
             "pageDescription"
         )
 
+        remember_description.setWordWrap(
+            True
+        )
+
         behavior_text.addWidget(
             remember_title
         )
@@ -582,10 +661,9 @@ class SettingsPage(QWidget):
         )
 
         behavior_layout.addLayout(
-            behavior_text
+            behavior_text,
+            1,
         )
-
-        behavior_layout.addStretch()
 
         behavior_layout.addWidget(
             self.remember_page_button
@@ -638,6 +716,10 @@ class SettingsPage(QWidget):
             "pageDescription"
         )
 
+        data_description.setWordWrap(
+            True
+        )
+
         data_text.addWidget(
             data_title
         )
@@ -659,10 +741,9 @@ class SettingsPage(QWidget):
         )
 
         data_layout.addLayout(
-            data_text
+            data_text,
+            1,
         )
-
-        data_layout.addStretch()
 
         data_layout.addWidget(
             open_data_button
@@ -670,6 +751,79 @@ class SettingsPage(QWidget):
 
         layout.addWidget(
             data_card
+        )
+
+        # ----------------------------------------------------
+        # About
+        # ----------------------------------------------------
+
+        about_card = QWidget()
+
+        about_card.setObjectName(
+            "summaryCard"
+        )
+
+        about_layout = QHBoxLayout(
+            about_card
+        )
+
+        about_layout.setContentsMargins(
+            20,
+            18,
+            20,
+            18,
+        )
+
+        about_text = QVBoxLayout()
+
+        about_text.setSpacing(
+            5
+        )
+
+        about_title = QLabel(
+            "About SysDeck"
+        )
+
+        about_title.setObjectName(
+            "driveTitle"
+        )
+
+        app = QApplication.instance()
+
+        version = (
+            app.applicationVersion()
+            if app is not None
+            else "Unknown"
+        )
+
+        about_description = QLabel(
+            f"Version {version} · "
+            "Windows system monitoring and file utility."
+        )
+
+        about_description.setObjectName(
+            "pageDescription"
+        )
+
+        about_description.setWordWrap(
+            True
+        )
+
+        about_text.addWidget(
+            about_title
+        )
+
+        about_text.addWidget(
+            about_description
+        )
+
+        about_layout.addLayout(
+            about_text,
+            1,
+        )
+
+        layout.addWidget(
+            about_card
         )
 
         layout.addStretch()
@@ -805,7 +959,7 @@ class SettingsPage(QWidget):
             )
 
         self.clear_index_button.setEnabled(
-            file_count > 0
+            bool(root_rows)
             and not self.maintenance_running()
         )
 
@@ -821,10 +975,22 @@ class SettingsPage(QWidget):
             len(rows)
         )
 
-        # Dynamically size the table so one indexed
-        # location doesn't leave a large empty area.
-        header_height = 42
+        # Dynamically size the table while using the active
+        # Qt style's real header dimensions.
         row_height = 40
+
+        vertical_header = (
+            self.locations_table
+            .verticalHeader()
+        )
+
+        vertical_header.setSectionResizeMode(
+            QHeaderView.ResizeMode.Fixed
+        )
+
+        vertical_header.setDefaultSectionSize(
+            row_height
+        )
 
         visible_rows = max(
             1,
@@ -834,10 +1000,23 @@ class SettingsPage(QWidget):
             ),
         )
 
+        header_height = (
+            self.locations_table
+            .horizontalHeader()
+            .sizeHint()
+            .height()
+        )
+
+        frame_height = (
+            self.locations_table.frameWidth()
+            * 2
+        )
+
         table_height = (
             header_height
             + visible_rows * row_height
-            + 4
+            + frame_height
+            + 2
         )
 
         self.locations_table.setFixedHeight(
