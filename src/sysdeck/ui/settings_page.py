@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from ..core.database import (
     connect_database,
     get_database_path,
+    get_indexed_root_rows,
 )
 
 
@@ -66,7 +67,9 @@ class IndexMaintenanceWorker(QObject):
                     FROM files
                     WHERE root_path = ?
                     """,
-                    (self.root_path,),
+                    (
+                        self.root_path,
+                    ),
                 ).fetchone()[0]
 
                 connection.execute(
@@ -74,8 +77,20 @@ class IndexMaintenanceWorker(QObject):
                     DELETE FROM files
                     WHERE root_path = ?
                     """,
-                    (self.root_path,),
+                    (
+                        self.root_path,
+                    ),
                 )
+
+                connection.execute(
+                    """
+                    DELETE FROM indexed_roots
+                    WHERE root_path = ?
+                    """,
+                    (
+                        self.root_path,
+                    ),
+    )
 
             elif self.action == "clear_all":
                 removed = connection.execute(
@@ -88,6 +103,12 @@ class IndexMaintenanceWorker(QObject):
                 connection.execute(
                     """
                     DELETE FROM files
+                    """
+                )
+
+                connection.execute(
+                    """
+                    DELETE FROM indexed_roots
                     """
                 )
 
@@ -731,17 +752,9 @@ class SettingsPage(QWidget):
                 """
             ).fetchone()[0]
 
-            root_rows = connection.execute(
-                """
-                SELECT
-                    root_path,
-                    COUNT(*) AS file_count,
-                    COALESCE(SUM(size), 0) AS total_size
-                FROM files
-                GROUP BY root_path
-                ORDER BY root_path COLLATE NOCASE
-                """
-            ).fetchall()
+            root_rows = get_indexed_root_rows(
+                connection
+            )
 
         finally:
             connection.close()

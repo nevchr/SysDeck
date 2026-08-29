@@ -29,7 +29,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.database import connect_database
+from ..core.database import (
+    connect_database,
+    get_index_counts,
+)
 
 
 # ============================================================
@@ -1185,29 +1188,33 @@ class FilesPage(QWidget):
         connection = connect_database()
 
         try:
-            file_count = connection.execute(
-                """
-                SELECT COUNT(*)
-                FROM files
-                """
-            ).fetchone()[0]
-
-            root_count = connection.execute(
-                """
-                SELECT COUNT(
-                    DISTINCT root_path
-                )
-                FROM files
-                """
-            ).fetchone()[0]
+            (
+                file_count,
+                root_count,
+            ) = get_index_counts(
+                connection
+            )
 
         finally:
             connection.close()
 
+        if root_count == 0:
+            self.index_status.setText(
+                "No locations indexed yet. "
+                "Index a location in Search first."
+            )
+
+            self.scan_button.setEnabled(
+                False
+            )
+
+            return
+
         if file_count == 0:
             self.index_status.setText(
-                "No files indexed yet. "
-                "Index a location in Search first."
+                f"{root_count:,} indexed "
+                f"location{'' if root_count == 1 else 's'} · "
+                "no files currently indexed"
             )
 
             self.scan_button.setEnabled(

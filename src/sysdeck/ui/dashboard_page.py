@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from ..core.database import (
     connect_database,
     get_database_path,
+    get_index_counts,
 )
 
 
@@ -520,21 +521,12 @@ class DashboardPage(QWidget):
         connection = connect_database()
 
         try:
-            file_count = connection.execute(
-                """
-                SELECT COUNT(*)
-                FROM files
-                """
-            ).fetchone()[0]
-
-            root_count = connection.execute(
-                """
-                SELECT COUNT(
-                    DISTINCT root_path
-                )
-                FROM files
-                """
-            ).fetchone()[0]
+            (
+                file_count,
+                root_count,
+            ) = get_index_counts(
+                connection
+            )
 
         finally:
             connection.close()

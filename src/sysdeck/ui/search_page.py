@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTableView,
     QVBoxLayout,
@@ -31,7 +32,12 @@ from PySide6.QtWidgets import (
 
 from ..core.database import (
     connect_database,
+    find_indexed_root_conflict,
     get_database_path,
+    get_index_counts,
+    get_indexed_roots,
+    normalize_root_path,
+    register_indexed_root,
 )
 
 
@@ -50,7 +56,7 @@ class FileIndexWorker(QObject):
     ):
         super().__init__()
 
-        self.root_folder = os.path.abspath(
+        self.root_folder = normalize_root_path(
             root_folder
         )
 
@@ -61,12 +67,31 @@ class FileIndexWorker(QObject):
         try:
             connection = connect_database()
 
+            # ------------------------------------------------
+            # Build the new index in a temporary table first.
+            #
+            # The existing index remains completely untouched
+            # until the filesystem scan succeeds.
+            # ------------------------------------------------
+
             connection.execute(
                 """
-                DELETE FROM files
-                WHERE root_path = ?
-                """,
-                (self.root_folder,),
+                DROP TABLE IF EXISTS
+                temp_index_files
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE TEMP TABLE temp_index_files (
+                    path TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    parent TEXT NOT NULL,
+                    extension TEXT,
+                    size INTEGER NOT NULL,
+                    modified REAL NOT NULL
+                )
+                """
             )
 
             connection.commit()
@@ -86,6 +111,10 @@ class FileIndexWorker(QObject):
                 nonlocal skipped_count
 
                 skipped_count += 1
+
+            # ------------------------------------------------
+            # Filesystem scan
+            # ------------------------------------------------
 
             for (
                 current_root,
@@ -162,7 +191,6 @@ class FileIndexWorker(QObject):
 
                     batch.append(
                         (
-                            self.root_folder,
                             path,
                             filename,
                             current_root,
@@ -175,7 +203,7 @@ class FileIndexWorker(QObject):
                     indexed_count += 1
 
                     if len(batch) >= 500:
-                        self.write_batch(
+                        self.write_staging_batch(
                             connection,
                             batch,
                         )
@@ -204,12 +232,79 @@ class FileIndexWorker(QObject):
                         )
 
             if batch:
-                self.write_batch(
+                self.write_staging_batch(
                     connection,
                     batch,
                 )
 
-            connection.commit()
+            if (
+                QThread.currentThread()
+                .isInterruptionRequested()
+            ):
+                return
+
+            # ------------------------------------------------
+            # Atomic index replacement
+            #
+            # Only now do we touch the persistent index.
+            #
+            # If anything below fails, rollback restores the
+            # previous index completely.
+            # ------------------------------------------------
+
+            try:
+                connection.execute(
+                    "BEGIN IMMEDIATE"
+                )
+
+                connection.execute(
+                    """
+                    DELETE FROM files
+                    WHERE root_path = ?
+                    """,
+                    (
+                        self.root_folder,
+                    ),
+                )
+
+                connection.execute(
+                    """
+                    INSERT INTO files (
+                        root_path,
+                        path,
+                        name,
+                        parent,
+                        extension,
+                        size,
+                        modified
+                    )
+
+                    SELECT
+                        ?,
+                        path,
+                        name,
+                        parent,
+                        extension,
+                        size,
+                        modified
+
+                    FROM temp_index_files
+                    """,
+                    (
+                        self.root_folder,
+                    ),
+                )
+
+                register_indexed_root(
+                    connection,
+                    self.root_folder,
+                )
+
+                connection.commit()
+
+            except Exception:
+                connection.rollback()
+                raise
 
             self.finished.emit(
                 {
@@ -234,14 +329,14 @@ class FileIndexWorker(QObject):
                 connection.close()
 
     @staticmethod
-    def write_batch(
+    def write_staging_batch(
         connection,
         batch,
     ):
         connection.executemany(
             """
-            INSERT INTO files (
-                root_path,
+            INSERT OR REPLACE INTO
+            temp_index_files (
                 path,
                 name,
                 parent,
@@ -249,21 +344,15 @@ class FileIndexWorker(QObject):
                 size,
                 modified
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
 
-            ON CONFLICT(path) DO UPDATE SET
-                root_path = excluded.root_path,
-                name = excluded.name,
-                parent = excluded.parent,
-                extension = excluded.extension,
-                size = excluded.size,
-                modified = excluded.modified
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             batch,
         )
 
+        # This only commits the temporary staging data.
+        # The persistent files table has not been modified yet.
         connection.commit()
-
 
 # ============================================================
 # Search result model
@@ -1367,6 +1456,69 @@ class SearchPage(QWidget):
         ):
             return
 
+        folder = normalize_root_path(
+            folder
+        )
+
+        if not os.path.isdir(
+            folder
+        ):
+            QMessageBox.warning(
+                self,
+                "Location unavailable",
+                (
+                    "The selected folder does not exist "
+                    "or is currently unavailable."
+                ),
+            )
+
+            return
+
+        connection = connect_database()
+
+        try:
+            conflict = find_indexed_root_conflict(
+                connection,
+                folder,
+            )
+
+        finally:
+            connection.close()
+
+        if conflict is not None:
+            existing_root = conflict[
+                "root"
+            ]
+
+            if (
+                conflict["type"]
+                == "covered_by"
+            ):
+                message = (
+                    "This folder is already inside an "
+                    "indexed location:\n\n"
+                    f"{existing_root}\n\n"
+                    "Reindex the existing location instead, "
+                    "or remove it from the index first."
+                )
+
+            else:
+                message = (
+                    "This folder contains an already "
+                    "indexed location:\n\n"
+                    f"{existing_root}\n\n"
+                    "Remove that indexed location first "
+                    "before indexing this broader folder."
+                )
+
+            QMessageBox.warning(
+                self,
+                "Indexed locations cannot overlap",
+                message,
+            )
+
+            return
+
         self.index_button.setEnabled(
             False
         )
@@ -1424,7 +1576,6 @@ class SearchPage(QWidget):
         )
 
         self.index_thread.start()
-
     @Slot(object)
     def handle_index_progress(
         self,
@@ -1490,13 +1641,9 @@ class SearchPage(QWidget):
         connection = connect_database()
 
         try:
-            roots = connection.execute(
-                """
-                SELECT DISTINCT root_path
-                FROM files
-                ORDER BY root_path COLLATE NOCASE
-                """
-            ).fetchall()
+            roots = get_indexed_roots(
+    connection
+)
 
             extensions = connection.execute(
                 """
@@ -1746,21 +1893,12 @@ class SearchPage(QWidget):
         connection = connect_database()
 
         try:
-            file_count = connection.execute(
-                """
-                SELECT COUNT(*)
-                FROM files
-                """
-            ).fetchone()[0]
-
-            root_count = connection.execute(
-                """
-                SELECT COUNT(
-                    DISTINCT root_path
-                )
-                FROM files
-                """
-            ).fetchone()[0]
+            (
+                file_count,
+                root_count,
+            ) = get_index_counts(
+                connection
+            )
 
         finally:
             connection.close()
@@ -1777,25 +1915,25 @@ class SearchPage(QWidget):
         except OSError:
             database_size = 0
 
-        if file_count == 0:
+        if root_count == 0:
             self.index_status.setText(
-                "No files indexed yet."
+                "No locations indexed yet."
             )
 
-        else:
-            location_word = (
-                "location"
-                if root_count == 1
-                else "locations"
-            )
+            return
 
-            self.index_status.setText(
-                f"{file_count:,} files indexed across "
-                f"{root_count:,} {location_word} · "
-                f"Index size "
-                f"{self.format_size(database_size)}"
-            )
+        location_word = (
+            "location"
+            if root_count == 1
+            else "locations"
+        )
 
+        self.index_status.setText(
+            f"{file_count:,} files indexed across "
+            f"{root_count:,} {location_word} · "
+            f"Index size "
+            f"{self.format_size(database_size)}"
+        )
     # ========================================================
     # Selected file
     # ========================================================
