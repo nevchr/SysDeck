@@ -25,58 +25,6 @@ from .storage_page import StoragePage
 from .theme import APP_STYLE
 
 
-class PlaceholderPage(QWidget):
-    def __init__(
-        self,
-        title,
-        description,
-    ):
-        super().__init__()
-
-        layout = QVBoxLayout(
-            self
-        )
-
-        layout.setContentsMargins(
-            46,
-            40,
-            46,
-            40,
-        )
-
-        layout.setSpacing(
-            8
-        )
-
-        layout.setAlignment(
-            Qt.AlignmentFlag.AlignTop
-        )
-
-        title_label = QLabel(
-            title
-        )
-
-        title_label.setObjectName(
-            "pageTitle"
-        )
-
-        description_label = QLabel(
-            description
-        )
-
-        description_label.setObjectName(
-            "pageDescription"
-        )
-
-        layout.addWidget(
-            title_label
-        )
-
-        layout.addWidget(
-            description_label
-        )
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -115,6 +63,10 @@ class MainWindow(QMainWindow):
         )
 
         self.setup_ui()
+
+    # ========================================================
+    # Main UI
+    # ========================================================
 
     def setup_ui(self):
         root = QWidget()
@@ -212,7 +164,6 @@ class MainWindow(QMainWindow):
             ("Storage", 3),
             ("Search", 4),
             ("Files", 5),
-            ("Vault", 6),
         ]
 
         for name, index in navigation:
@@ -237,7 +188,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(
             self.create_nav_button(
                 "Settings",
-                7,
+                6,
             )
         )
 
@@ -310,14 +261,13 @@ class MainWindow(QMainWindow):
             FilesHub()
         )
 
-        self.vault_page = PlaceholderPage(
-            "Vault",
-            "Securely store local credentials and private information.",
-        )
-
         self.settings_page = (
             SettingsPage()
         )
+
+        # ----------------------------------------------------
+        # Cross-page signals
+        # ----------------------------------------------------
 
         self.dashboard_page.navigate_requested.connect(
             self.switch_page
@@ -330,6 +280,10 @@ class MainWindow(QMainWindow):
         self.settings_page.index_changed.connect(
             self.handle_index_changed
         )
+
+        # ----------------------------------------------------
+        # Stack order
+        # ----------------------------------------------------
 
         self.pages.addWidget(
             self.dashboard_page
@@ -353,10 +307,6 @@ class MainWindow(QMainWindow):
 
         self.pages.addWidget(
             self.files_page
-        )
-
-        self.pages.addWidget(
-            self.vault_page
         )
 
         self.pages.addWidget(
@@ -390,6 +340,23 @@ class MainWindow(QMainWindow):
                 ValueError,
             ):
                 page_index = 0
+
+        # ----------------------------------------------------
+        # v1 navigation migration
+        #
+        # Old layout:
+        #   Vault    = 6
+        #   Settings = 7
+        #
+        # New layout:
+        #   Settings = 6
+        #
+        # Any stored page at or beyond the old Vault
+        # position safely lands on Settings.
+        # ----------------------------------------------------
+
+        if page_index >= 6:
+            page_index = 6
 
         if not (
             0
@@ -465,5 +432,5 @@ class MainWindow(QMainWindow):
         self.search_page.refresh_index_status()
         self.search_page.perform_search()
 
-        # Files
+        # Files / Duplicates
         self.files_page.refresh_index_info()
