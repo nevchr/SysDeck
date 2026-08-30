@@ -1,168 +1,58 @@
-SysDeck
+# SysDeck
 
-SysDeck is a Windows desktop utility built with Python and PySide6 for monitoring system activity, searching indexed files, analyzing storage, finding duplicate files, and organizing folders from one clean interface.
+SysDeck is a local-first Windows desktop utility built with Python and PySide6 for monitoring system activity, searching indexed files, analyzing storage, finding duplicate files, and organizing folders from one clean interface.
 
+![SysDeck Dashboard](docs/screenshots/dashboard.png)
 
+## Features
 
-Features
+- **Dashboard** — Quick overview of CPU, memory, process count, uptime, storage, and SysDeck index statistics.
+- **Performance** — Live CPU, memory, disk, network, uptime, and process activity with lightweight history graphs.
+- **Processes** — Searchable and sortable view of running Windows processes with CPU and memory usage.
+- **Storage** — Analyze drives and folders, inspect space usage, and surface large files.
+- **Indexed Search** — Build a local metadata index and quickly search files by name or path using location, type, size, and modified-date filters.
+- **Duplicate Finder** — Detect exact duplicate files using staged hashing and safely move selected copies to the Windows Recycle Bin.
+- **Organizer** — Preview and organize loose files into categories without overwriting existing files.
+- **Index Management** — Reindex, remove, or clear indexed locations from Settings.
+- **Local App Settings** — Optional last-page restore and local application-data management.
 
-Dashboard — quick overview of CPU, memory, process count, uptime, storage, and SysDeck index statistics.
+## Screenshots
 
-Performance — live CPU, memory, disk, network, uptime, and process activity with lightweight history graphs.
+### Performance
 
-Processes — searchable and sortable view of running Windows processes with CPU and memory usage.
+![SysDeck Performance](docs/screenshots/performance.png)
 
-Storage — analyze drives and folders, inspect space usage, and surface large files.
+### File Tools
 
-Indexed Search — build a local metadata index and quickly search files by name or path with filters for location, type, size, and modified date.
+![SysDeck File Tools](docs/screenshots/files.png)
 
-Duplicate Finder — detect exact duplicate files using staged hashing and safely move selected copies to the Windows Recycle Bin.
+### Settings
 
-Organizer — preview and organize loose files into categories without overwriting existing files.
+![SysDeck Settings](docs/screenshots/settings.png)
 
-Index Management — reindex, remove, or clear indexed locations from Settings.
+## Installation
 
-Local App Settings — optional last-page restore and local application data management.
+SysDeck v1.0.0 is available as a Windows installer.
 
-Screenshots
+1. Open the repository's **Releases** page.
+2. Download `SysDeck-Setup-1.0.0.exe`.
+3. Run the installer.
+4. Launch SysDeck from the Start Menu.
 
-Performance
+> **Note:** The current installer is not code-signed, so Windows SmartScreen may display an "Unknown publisher" warning.
 
-Duplicate Finder
+### System Requirements
 
+- Windows 10 or Windows 11
+- 64-bit Windows
 
+## Tech Stack
 
-
-
-Settings
-
-Dashboard
-
-
-
-
-
-Install
-
-SysDeck v1.0.0 is distributed as a Windows installer.
-
-Open the repository's Releases page.
-
-Download SysDeck-Setup-1.0.0.exe.
-
-Run the installer.
-
-Launch SysDeck from the Start Menu.
-
-Note: The current installer is not code-signed, so Windows SmartScreen may show an "Unknown publisher" warning.
-
-System requirements
-
-Windows 10 or Windows 11
-
-64-bit Windows
-
-How SysDeck handles your files
-
-SysDeck is designed to keep destructive actions explicit and limited:
-
-The search index stores file metadata, not file contents.
-
-Indexed data is stored locally in SQLite.
-
-Duplicate cleanup sends files to the Windows Recycle Bin rather than permanently deleting them.
-
-Organizer moves are previewed before execution and do not overwrite existing files.
-
-Removing a location from the index does not delete the actual folder or its files.
-
-Application data is stored under:
-
-%LOCALAPPDATA%\SysDeck\
-
-Run from source
-
-1. Clone the repository
-
-git clone https://github.com/nevchr/SysDeck.git
-cd SysDeck
-
-2. Create and activate a virtual environment
-
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-3. Install dependencies
-
-python -m pip install -r requirements.txt
-
-4. Run SysDeck
-
-python -m src.sysdeck.main
-
-Build the Windows executable
-
-Install PyInstaller:
-
-python -m pip install pyinstaller
-
-Build the application:
-
-pyinstaller --noconfirm --clean --windowed --name SysDeck --icon "assets\sysdeck_icon.ico" --add-data "assets;assets" run_sysdeck.py
-
-The onedir build will be created under:
-
-dist\SysDeck\
-
-Build the installer
-
-SysDeck uses Inno Setup for the installer.
-
-Compile:
-
-installer\SysDeck.iss
-
-The installer is written to:
-
-installer-output\SysDeck-Setup-1.0.0.exe
-
-Tech stack
-
-Python
-
-PySide6 / Qt
-
-psutil
-
-SQLite
-
-Send2Trash
-
-PyInstaller
-
-Inno Setup
-
-Git / GitHub
-
-Project structure
-
-SysDeck/
-├── assets/
-├── installer/
-├── src/
-│   └── sysdeck/
-│       ├── core/
-│       └── ui/
-├── run_sysdeck.py
-├── requirements.txt
-└── README.md
-
-Version
-
-SysDeck v1.0.0
-
-Initial release focused on a polished, local-first Windows system utility with system monitoring, file indexing/search, storage analysis, duplicate detection, and file organization.
-
-License
-
-No license has been added yet. All rights are reserved unless a license is added to the repository.
+- Python
+- PySide6 / Qt
+- psutil
+- SQLite
+- Send2Trash
+- PyInstaller
+- Inno Setup
+- Git / GitHub
