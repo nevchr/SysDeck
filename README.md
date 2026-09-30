@@ -56,3 +56,29 @@ SysDeck v1.0.0 is available as a Windows installer.
 - PyInstaller
 - Inno Setup
 - Git / GitHub
+
+## Run from source
+
+Use Python 3.12+ on Windows x64. From the repository root in PowerShell:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe run_sysdeck.py
+```
+
+The source entry point starts the same PySide6 app as the installer. Indexes and settings are generated in the local user profile; no existing index database is required in Git.
+
+## Build and check
+
+```powershell
+.\.venv\Scripts\python.exe -m compileall -q src run_sysdeck.py
+.\.venv\Scripts\python.exe -m pip install pyinstaller
+.\.venv\Scripts\python.exe -m PyInstaller SysDeck.spec
+```
+
+The portable app directory is `dist/SysDeck/`. To create the installer, install Inno Setup 6 and run `ISCC.exe installer/SysDeck.iss` with its compiler on PATH; output goes to `installer-output/`. Packaging outputs are generated locally and are not source dependencies.
+
+## Status and limitations
+
+This is a Windows-only local utility. It can inspect only files and processes available to the current user. Duplicate detection identifies exact content matches; organizing and recycling files are user-triggered operations. The repository has no automated unit-test suite; the syntax check above does not replace interactive testing of file operations or clean-machine installer validation. The existing v1.0.0 installer is unsigned.
